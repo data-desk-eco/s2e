@@ -125,31 +125,45 @@ export async function detectImage(item, bbox, { signal } = {}) {
         while (idx < blocks.length) {
             if (signal?.aborted) break;
             const { br, bc, window: windowArr } = blocks[idx++];
+            const [x0, y0, x1, y1] = windowArr;
+            const w = x1 - x0, h = y1 - y0;
 
             try {
-                const result = await detectBlock({
-                    b12Image, b11Image, b8aImage, sclImage,
-                    windowArr,
-                    imgDate: date,
-                    sunElevation: item.sunElevation ?? null,
-                    itemEpsg: epsg,
+                // Read band windows as typed arrays
+                const b12Raw = await readWindow(b12Image, windowArr);
+                if (!b12Raw) continue;
+                const b11Raw = await readWindow(b11Image, windowArr);
+                if (!b11Raw) continue;
+
+                let b8aRaw = null;
+                if (b8aImage) {
+                    try { b8aRaw = await readWindow(b8aImage, windowArr); } catch (e) { /* skip */ }
+                }
+                let sclRaw = null;
+                if (sclImage) {
+                    try { sclRaw = await readWindow(sclImage, windowArr); } catch (e) { /* skip */ }
+                }
+
+                const result = detectBlock(b12Raw, b11Raw, b8aRaw, sclRaw, {
+                    date,
+                    epsg,
                     imgMinX, imgMaxY, resX, resY,
-                    blockId: `${mgrs}_${br}_${bc}`,
-                    b12Url,
+                    blockOffsetX: x0,
+                    blockOffsetY: y0,
+                    width: w,
+                    height: h,
                 });
 
                 blocksProcessed++;
 
-                if (!result.skipped) {
-                    if (result.cloudFree === false) allCloudFree = false;
-                    for (const det of result.detections) {
-                        const canonRow = Math.floor(det._peakImgRow / BLOCK_SIZE);
-                        const canonCol = Math.floor(det._peakImgCol / BLOCK_SIZE);
-                        if (canonRow === br && canonCol === bc) {
-                            delete det._peakImgRow;
-                            delete det._peakImgCol;
-                            allDetections.push(det);
-                        }
+                if (result.cloudFree === false) allCloudFree = false;
+                for (const det of result.detections) {
+                    const canonRow = Math.floor(det._peakImgRow / BLOCK_SIZE);
+                    const canonCol = Math.floor(det._peakImgCol / BLOCK_SIZE);
+                    if (canonRow === br && canonCol === bc) {
+                        delete det._peakImgRow;
+                        delete det._peakImgCol;
+                        allDetections.push(det);
                     }
                 }
             } catch (err) {

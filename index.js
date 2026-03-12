@@ -8,7 +8,8 @@ import { detectImage } from './cog.js';
 
 // Primary entry point: async generator that searches STAC and processes images
 export async function* detect(bbox, start, end, options = {}) {
-    const { signal } = options;
+    const { signal, skipDates } = options;
+    const skip = skipDates ? new Set(skipDates) : null;
     const items = [];
 
     // Collect all STAC items first (need total for progress)
@@ -16,11 +17,18 @@ export async function* detect(bbox, start, end, options = {}) {
         items.push(item);
     }
 
+    const skipped = skip ? items.filter(it => skip.has(it.date)).length : 0;
+
     const observations = new Map();
 
     for (let i = 0; i < items.length; i++) {
         if (signal?.aborted) return;
         const item = items[i];
+
+        if (skip?.has(item.date)) {
+            yield { type: 'progress', imagesProcessed: i + 1, imagesTotal: items.length, imagesSkipped: skipped };
+            continue;
+        }
 
         yield { type: 'image-start', item, date: item.date, cloudCover: item.cloudCover };
 
@@ -32,6 +40,6 @@ export async function* detect(bbox, start, end, options = {}) {
         }
 
         yield { type: 'image-done', date: item.date, blocksProcessed: result.blocksProcessed };
-        yield { type: 'progress', imagesProcessed: i + 1, imagesTotal: items.length };
+        yield { type: 'progress', imagesProcessed: i + 1, imagesTotal: items.length, imagesSkipped: skipped };
     }
 }

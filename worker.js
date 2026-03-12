@@ -12,21 +12,23 @@ self.onmessage = async (e) => {
     }
 
     if (type === 'detect') {
-        const { bbox, start, end, clusterOptions } = e.data;
+        const { bbox, start, end, clusterOptions, skipDates, priorDetections } = e.data;
         abortController = new AbortController();
-        const allDetections = [];
+        const allDetections = priorDetections ? [...priorDetections] : [];
 
         try {
-            for await (const event of detect(bbox, start, end, { signal: abortController.signal })) {
+            for await (const event of detect(bbox, start, end, { signal: abortController.signal, skipDates })) {
                 if (event.type === 'detections') {
                     allDetections.push(...event.features);
                     self.postMessage({ type: 'detections', features: event.features, date: event.date });
                 } else if (event.type === 'progress') {
-                    self.postMessage({ type: 'progress', done: event.imagesProcessed, total: event.imagesTotal });
+                    self.postMessage({ type: 'progress', done: event.imagesProcessed, total: event.imagesTotal, skipped: event.imagesSkipped || 0 });
+                } else if (event.type === 'image-done') {
+                    self.postMessage({ type: 'image-done', date: event.date });
                 }
             }
 
-            // Run clustering — consumer can pass threshold overrides
+            // Run clustering on all detections (prior + new)
             const clusters = clusterDetections(allDetections, clusterOptions);
             self.postMessage({ type: 'clusters', features: clusters });
             self.postMessage({ type: 'done' });

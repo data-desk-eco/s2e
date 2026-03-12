@@ -24,7 +24,8 @@ vendor/
 - **detect.js takes typed arrays, not GeoTIFF images.** I/O is in cog.js; detection is pure computation. This lets burnoff do its own I/O with caching and P2P partitioning.
 - **clusterDetections is a pure function** with no global state. Consumers pass `observations` map for persistence calculation, or null to skip.
 - **searchSTAC is an async generator** that yields normalized items after deduplication.
-- **The worker runs clustering automatically** but consumers can also use the library functions directly (burnoff does this).
+- **The worker runs clustering incrementally** after each detection batch (not just at the end), so consumers get live cluster updates. Consumers can also use the library functions directly (burnoff does this).
+- **Each cluster has a deterministic `id`** (hash of anchor lat/lon at 4 decimal places) for stable deep linking and caching.
 
 ## Detection Algorithm
 
@@ -33,4 +34,4 @@ See burnoff CLAUDE.md for the full algorithm spec. The thresholds and logic are 
 ## Consumers
 
 - **burnoff**: Uses lower-level functions (searchSTAC, openCOG, readWindow, enumerateBlocks, detectBlock) for P2P block partitioning and CRDT caching. Uses clusterDetections with terminal naming post-processing.
-- **gaslight**: Uses the worker.js message interface for single-flare enhancement. Relaxed thresholds (minDates=1, minAvgB12=0.5).
+- **gaslight**: Uses the worker.js message interface for single-flare enhancement. Relaxed thresholds (minDates=1, minAvgB12=0.5). Each cluster rendered as a first-class map feature with its own detail card and deep link.

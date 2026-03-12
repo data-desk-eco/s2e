@@ -1,6 +1,13 @@
 const DEG_TO_RAD = Math.PI / 180;
 const R_EARTH = 6371000;
 
+function clusterHash(lat, lon) {
+    const s = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    return (h >>> 0).toString(36);
+}
+
 function fastDistM(lat1, lon1, lat2, lon2) {
     const dLat = (lat2 - lat1) * DEG_TO_RAD;
     const dLon = (lon2 - lon1) * DEG_TO_RAD * Math.cos(((lat1 + lat2) * 0.5) * DEG_TO_RAD);
@@ -51,6 +58,7 @@ export function clusterDetections(detections, options = {}) {
             const lon = det.lon ?? det.flare_lon;
             const lat = det.lat ?? det.flare_lat;
             clusters.push({
+                id: clusterHash(lat, lon),
                 lon,
                 lat,
                 max_b12: det.max_b12,
@@ -152,6 +160,7 @@ export function clusterDetections(detections, options = {}) {
         }
 
         result.push({
+            id: clusterHash(anchorLat, anchorLon),
             lon: anchorLon,
             lat: anchorLat,
             max_b12: anchor.max_b12,

@@ -21,6 +21,9 @@ self.onmessage = async (e) => {
                 if (event.type === 'detections') {
                     allDetections.push(...event.features);
                     self.postMessage({ type: 'detections', features: event.features, date: event.date });
+                    // Incremental clustering after each new batch
+                    const clusters = clusterDetections(allDetections, clusterOptions);
+                    self.postMessage({ type: 'clusters', features: clusters });
                 } else if (event.type === 'progress') {
                     self.postMessage({ type: 'progress', done: event.imagesProcessed, total: event.imagesTotal, skipped: event.imagesSkipped || 0 });
                 } else if (event.type === 'image-done') {
@@ -28,7 +31,7 @@ self.onmessage = async (e) => {
                 }
             }
 
-            // Run clustering on all detections (prior + new)
+            // Final clustering (covers prior detections with no new detections)
             const clusters = clusterDetections(allDetections, clusterOptions);
             self.postMessage({ type: 'clusters', features: clusters });
             self.postMessage({ type: 'done' });

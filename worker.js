@@ -24,6 +24,8 @@ self.onmessage = async (e) => {
                     // Incremental clustering after each new batch
                     const clusters = clusterDetections(allDetections, clusterOptions);
                     self.postMessage({ type: 'clusters', features: clusters });
+                } else if (event.type === 'image-start') {
+                    self.postMessage({ type: 'image-start', id: event.item.id, date: event.date });
                 } else if (event.type === 'progress') {
                     self.postMessage({ type: 'progress', done: event.imagesProcessed, total: event.imagesTotal, skipped: event.imagesSkipped || 0 });
                 } else if (event.type === 'image-done') {

@@ -181,34 +181,37 @@ export async function detectImage(item, bbox, { signal } = {}) {
 
     // Open auxiliary bands lazily — only opened if a block has hot B12 pixels
     let b11Image = null, b8aImage = null, sclImage = null;
-    let bandsOpened = false;
+    let bandsPromise = null;
 
     async function ensureBandsOpen() {
-        if (bandsOpened) return;
-        bandsOpened = true;
-        const promises = [];
-        promises.push(
-            GeoTIFF.fromUrl(b11Url, { allowFullFile: false })
-                .then(tiff => tiff.getImage())
-                .then(img => { b11Image = img; })
-        );
-        if (b8aUrl) {
-            promises.push(
-                GeoTIFF.fromUrl(b8aUrl, { allowFullFile: false })
-                    .then(tiff => tiff.getImage())
-                    .then(img => { b8aImage = img; })
-                    .catch(() => {})
-            );
+        if (!bandsPromise) {
+            bandsPromise = (async () => {
+                const promises = [];
+                promises.push(
+                    GeoTIFF.fromUrl(b11Url, { allowFullFile: false })
+                        .then(tiff => tiff.getImage())
+                        .then(img => { b11Image = img; })
+                );
+                if (b8aUrl) {
+                    promises.push(
+                        GeoTIFF.fromUrl(b8aUrl, { allowFullFile: false })
+                            .then(tiff => tiff.getImage())
+                            .then(img => { b8aImage = img; })
+                            .catch(() => {})
+                    );
+                }
+                if (sclUrl) {
+                    promises.push(
+                        GeoTIFF.fromUrl(sclUrl, { allowFullFile: false })
+                            .then(tiff => tiff.getImage())
+                            .then(img => { sclImage = img; })
+                            .catch(() => {})
+                    );
+                }
+                await Promise.all(promises);
+            })();
         }
-        if (sclUrl) {
-            promises.push(
-                GeoTIFF.fromUrl(sclUrl, { allowFullFile: false })
-                    .then(tiff => tiff.getImage())
-                    .then(img => { sclImage = img; })
-                    .catch(() => {})
-            );
-        }
-        await Promise.all(promises);
+        await bandsPromise;
     }
 
     const allDetections = [];

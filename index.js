@@ -8,12 +8,12 @@ import { detectImage } from './cog.js';
 
 // Primary entry point: async generator that searches STAC and processes images
 export async function* detect(bbox, start, end, options = {}) {
-    const { signal, skipDates } = options;
+    const { signal, skipDates, maxCloudCover } = options;
     const skip = skipDates ? new Set(skipDates) : null;
     const items = [];
 
     // Collect all STAC items first (need total for progress)
-    for await (const item of searchSTAC(bbox, start, end, { signal })) {
+    for await (const item of searchSTAC(bbox, start, end, { signal, maxCloudCover })) {
         items.push(item);
     }
 

@@ -12,12 +12,12 @@ self.onmessage = async (e) => {
     }
 
     if (type === 'detect') {
-        const { bbox, start, end, clusterOptions, skipDates, priorDetections } = e.data;
+        const { bbox, start, end, clusterOptions, skipDates, priorDetections, maxCloudCover } = e.data;
         abortController = new AbortController();
         const allDetections = priorDetections ? [...priorDetections] : [];
 
         try {
-            for await (const event of detect(bbox, start, end, { signal: abortController.signal, skipDates })) {
+            for await (const event of detect(bbox, start, end, { signal: abortController.signal, skipDates, maxCloudCover })) {
                 if (event.type === 'detections') {
                     allDetections.push(...event.features);
                     self.postMessage({ type: 'detections', features: event.features, date: event.date });

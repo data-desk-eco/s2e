@@ -1,6 +1,12 @@
 import { GeoTIFF } from './vendor/geotiff-esm.js';
 import { wgs84ToUtm, utmParams } from './geo.js';
-import { detectBlock, BLOCK_SIZE, BLOCK_OVERLAP } from './detect.js';
+import { detectBlock, BLOCK_SIZE, BLOCK_OVERLAP, B12_MIN, MAX_CLOUD_LOCAL, CLOUD_FREE_THRESH } from './detect.js';
+
+// B12_MIN as raw DN value (before reflectance conversion)
+const B12_DN_MIN = B12_MIN * 10000 + 1000; // 4000
+
+// How much to downsample for overview screening (8× = 160m for 20m bands)
+const OVERVIEW_FACTOR = 8;
 
 // Open a COG and return image handle + metadata
 export async function openCOG(url) {
@@ -22,12 +28,10 @@ export async function readWindow(image, windowArr) {
     const [x0, y0, x1, y1] = windowArr;
     if (x1 - x0 <= 0 || y1 - y0 <= 0) return null;
     const rasters = await image.readRasters({ window: windowArr });
-    return rasters[0]; // Return just the typed array, not {data, width, height}
+    return rasters[0];
 }
 
 // Enumerate blocks overlapping a bbox (in image pixel coordinates)
-// imgMeta: result of openCOG(); bbox: [west, south, east, north] WGS84; epsg: image EPSG
-// Returns array of { br, bc, window: [x0, y0, x1, y1] }
 export function enumerateBlocks(imgMeta, bbox, epsg) {
     const { width: imgWidth, height: imgHeight, bbox: imgBbox, resX, resY } = imgMeta;
     const [imgMinX, imgMinY, imgMaxX, imgMaxY] = imgBbox;
@@ -61,22 +65,121 @@ export function enumerateBlocks(imgMeta, bbox, epsg) {
     return blocks;
 }
 
+// --- Overview screening functions ---
+
+// Screen B12 at overview resolution for the query bbox.
+// Returns true if any pixel has DN >= B12_DN_MIN (potential flare), false if safe to skip.
+// Uses tiff.readRasters() which auto-selects the best overview level.
+async function screenB12Overview(b12Tiff, utmBbox, resX, resY) {
+    try {
+        const rasters = await b12Tiff.readRasters({
+            bbox: utmBbox,
+            resX: resX * OVERVIEW_FACTOR,
+            resY: resY * OVERVIEW_FACTOR,
+        });
+        const data = rasters[0];
+        for (let i = 0; i < data.length; i++) {
+            if (data[i] >= B12_DN_MIN) return true;
+        }
+        return false;
+    } catch (e) {
+        // If overview reading fails, don't skip — proceed with full-res
+        return true;
+    }
+}
+
+// Screen SCL at overview resolution for the query bbox.
+// Returns { skip, cloudFree } — skip=true means >75% cloud, safe to skip entire scene.
+async function screenSCLOverview(sclUrl, utmBbox, resX, resY) {
+    try {
+        const tiff = await GeoTIFF.fromUrl(sclUrl, { allowFullFile: false });
+        const rasters = await tiff.readRasters({
+            bbox: utmBbox,
+            resX: resX * OVERVIEW_FACTOR,
+            resY: resY * OVERVIEW_FACTOR,
+        });
+        const data = rasters[0];
+        if (!data || data.length === 0) return { skip: false, cloudFree: true };
+        let cloudPixels = 0;
+        for (let i = 0; i < data.length; i++) {
+            const v = data[i];
+            if (v === 3 || v === 8 || v === 9 || v === 10) cloudPixels++;
+        }
+        const cloudFrac = cloudPixels / data.length;
+        if (cloudFrac > MAX_CLOUD_LOCAL) return { skip: true, cloudFree: false };
+        return { skip: false, cloudFree: cloudFrac <= CLOUD_FREE_THRESH };
+    } catch (e) {
+        // If overview reading fails, don't skip
+        return { skip: false, cloudFree: true };
+    }
+}
+
+// Quick scan: does a raw B12 block have any pixel above the DN threshold?
+// Single pass with early exit — avoids reading B11/B8A/SCL for cold blocks.
+function blockHasHotPixels(b12Raw) {
+    for (let i = 0; i < b12Raw.length; i++) {
+        if (b12Raw[i] >= B12_DN_MIN) return true;
+    }
+    return false;
+}
+
 // Process a full S2 image: open bands, enumerate blocks, run detection, dedup
 // item: normalized STAC item (from stac.js) with .bands.b12/.b11/.b8a/.scl, .date, .epsg, .mgrs
 // bbox: [west, south, east, north] WGS84
-// Returns { detections: [...], cloudFree: boolean, blocksProcessed: number }
+// Returns { detections: [...], cloudFree: boolean, blocksProcessed: number, skippedOverview: boolean }
 export async function detectImage(item, bbox, { signal } = {}) {
     const { bands, date, epsg, mgrs } = item;
     const { b12: b12Url, b11: b11Url, b8a: b8aUrl, scl: sclUrl } = bands;
 
     if (!b12Url || !b11Url) return { detections: [], cloudFree: true, blocksProcessed: 0 };
 
-    const b12Meta = await openCOG(b12Url);
-    const blocks = enumerateBlocks(b12Meta, bbox, epsg);
+    // Open B12 COG — keep tiff handle for overview reads
+    const b12Tiff = await GeoTIFF.fromUrl(b12Url, { allowFullFile: false });
+    const b12Image = await b12Tiff.getImage();
+    const [imgMinX, imgMinY, imgMaxX, imgMaxY] = b12Image.getBoundingBox();
+    const imgWidth = b12Image.getWidth();
+    const imgHeight = b12Image.getHeight();
+    const resX = (imgMaxX - imgMinX) / imgWidth;
+    const resY = (imgMaxY - imgMinY) / imgHeight;
 
-    if (blocks.length === 0) return { detections: [], cloudFree: true, blocksProcessed: 0 };
+    // Compute UTM bbox for the query region (clipped to image extent)
+    const { zone, isNorth } = utmParams(epsg);
+    const sw = wgs84ToUtm(bbox[0], bbox[1], zone, isNorth);
+    const ne = wgs84ToUtm(bbox[2], bbox[3], zone, isNorth);
+    const utmBbox = [
+        Math.max(sw[0], imgMinX), Math.max(sw[1], imgMinY),
+        Math.min(ne[0], imgMaxX), Math.min(ne[1], imgMaxY),
+    ];
 
-    // Open auxiliary bands lazily
+    // --- Overview screening (reads ~1-2% of full-res data) ---
+
+    // Screen 1: SCL overview — skip fully cloudy scenes before reading any spectral data
+    let overviewCloudFree = true;
+    if (sclUrl) {
+        const cloudResult = await screenSCLOverview(sclUrl, utmBbox, resX, resY);
+        if (cloudResult.skip) {
+            return { detections: [], cloudFree: false, blocksProcessed: 0, skippedOverview: true };
+        }
+        overviewCloudFree = cloudResult.cloudFree;
+    }
+
+    // Screen 2: B12 overview — skip scenes with no hot pixels anywhere in the bbox
+    const hasHot = await screenB12Overview(b12Tiff, utmBbox, resX, resY);
+    if (!hasHot) {
+        return { detections: [], cloudFree: overviewCloudFree, blocksProcessed: 0, skippedOverview: true };
+    }
+
+    // --- Passed overview screening — proceed with full-res block processing ---
+
+    const imgMeta = {
+        image: b12Image, bbox: [imgMinX, imgMinY, imgMaxX, imgMaxY],
+        width: imgWidth, height: imgHeight, resX, resY,
+    };
+    const blocks = enumerateBlocks(imgMeta, bbox, epsg);
+
+    if (blocks.length === 0) return { detections: [], cloudFree: overviewCloudFree, blocksProcessed: 0 };
+
+    // Open auxiliary bands lazily — only opened if a block has hot B12 pixels
     let b11Image = null, b8aImage = null, sclImage = null;
     let bandsOpened = false;
 
@@ -108,14 +211,8 @@ export async function detectImage(item, bbox, { signal } = {}) {
         await Promise.all(promises);
     }
 
-    await ensureBandsOpen();
-
-    const { image: b12Image, width: imgWidth, height: imgHeight,
-            bbox: imgBbox, resX, resY } = b12Meta;
-    const [imgMinX, imgMinY, imgMaxX, imgMaxY] = imgBbox;
-
     const allDetections = [];
-    let allCloudFree = true;
+    let allCloudFree = overviewCloudFree;
     let blocksProcessed = 0;
 
     const CONCURRENCY = 6;
@@ -129,9 +226,18 @@ export async function detectImage(item, bbox, { signal } = {}) {
             const w = x1 - x0, h = y1 - y0;
 
             try {
-                // Read band windows as typed arrays
+                // Read B12 first — quick-reject blocks with no hot pixels
                 const b12Raw = await readWindow(b12Image, windowArr);
                 if (!b12Raw) continue;
+
+                if (!blockHasHotPixels(b12Raw)) {
+                    blocksProcessed++;
+                    continue; // Skip B11/B8A/SCL reads entirely
+                }
+
+                // Block has candidates — now open auxiliary bands and read them
+                await ensureBandsOpen();
+
                 const b11Raw = await readWindow(b11Image, windowArr);
                 if (!b11Raw) continue;
 

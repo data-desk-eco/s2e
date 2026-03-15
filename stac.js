@@ -33,7 +33,7 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
     }
 }
 
-export async function* searchSTAC(bbox, start, end, { signal } = {}) {
+export async function* searchSTAC(bbox, start, end, { signal, maxCloudCover = 100 } = {}) {
     let startDate = start;
     let endDate = end;
     if (!startDate || !endDate) {
@@ -81,6 +81,8 @@ export async function* searchSTAC(bbox, start, end, { signal } = {}) {
         }
     }
     for (const { item } of Object.values(byTileDate)) {
+        const cloud = item.properties['eo:cloud_cover'] ?? 100;
+        if (cloud > maxCloudCover) continue;
         yield {
             id: item.id,
             date: item.properties.datetime.slice(0, 10),

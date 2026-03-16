@@ -18,13 +18,13 @@ BUILD_DIR=$(mktemp -d)
 echo "=== Building deployment package ==="
 
 # Copy source files (only what's needed)
-for f in cog.js detect.js geo.js stac.js cluster.js index.js package.json; do
-    cp "$PROJECT_DIR/$f" "$BUILD_DIR/"
+mkdir -p "$BUILD_DIR/lib/vendor" "$BUILD_DIR/lambda"
+for f in cog.js detect.js geo.js stac.js cluster.js index.js; do
+    cp "$PROJECT_DIR/lib/$f" "$BUILD_DIR/lib/"
 done
-mkdir -p "$BUILD_DIR/lambda" "$BUILD_DIR/vendor"
-cp "$PROJECT_DIR/lambda/handler.js" "$BUILD_DIR/lambda/"
-cp "$PROJECT_DIR/vendor/geotiff-esm.js" "$BUILD_DIR/vendor/"
+cp "$PROJECT_DIR/lib/vendor/geotiff-esm.js" "$BUILD_DIR/lib/vendor/"
 # Note: vendored geotiff.js is NOT needed — Node.js uses npm geotiff package
+cp "$PROJECT_DIR/lambda/handler.js" "$BUILD_DIR/lambda/"
 
 # Install only geotiff (Lambda doesn't need @aws-sdk/client-lambda)
 cd "$BUILD_DIR"

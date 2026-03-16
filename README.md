@@ -9,7 +9,7 @@ Pure ES modules. Browser: zero npm dependencies (vendored geotiff.js). CLI/Lambd
 ### Async generator (main thread or worker)
 
 ```js
-import { detect } from './index.js';
+import { detect } from './lib/index.js';
 
 for await (const event of detect(bbox, startDate, endDate, { signal })) {
     // event.type: 'image-start' | 'detections' | 'image-done' | 'progress'
@@ -19,7 +19,7 @@ for await (const event of detect(bbox, startDate, endDate, { signal })) {
 ### Web Worker
 
 ```js
-const w = new Worker('worker.js', { type: 'module' });
+const w = new Worker('lib/worker.js', { type: 'module' });
 w.postMessage({ type: 'detect', bbox, start, end, clusterOptions: { minDates: 1 } });
 w.onmessage = (e) => { /* detections | progress | clusters | error | done */ };
 ```
@@ -27,9 +27,9 @@ w.onmessage = (e) => { /* detections | progress | clusters | error | done */ };
 ### Lower-level API
 
 ```js
-import { searchSTAC } from './stac.js';
-import { detectImage } from './cog.js';
-import { clusterDetections } from './cluster.js';
+import { searchSTAC } from './lib/stac.js';
+import { detectImage } from './lib/cog.js';
+import { clusterDetections } from './lib/cluster.js';
 
 const items = [];
 for await (const item of searchSTAC(bbox, start, end)) items.push(item);
@@ -66,17 +66,21 @@ Deploy the Lambda (requires AWS CLI configured with us-west-2 access):
 bash lambda/deploy.sh
 ```
 
-## Files
+## Structure
 
-| File | Purpose |
-|------|---------|
-| `index.js` | Public API: `detect()` async generator + re-exports |
-| `worker.js` | Web Worker wrapper with automatic clustering |
-| `stac.js` | STAC search with pagination and deduplication |
-| `cog.js` | COG I/O, block enumeration, per-image orchestration |
-| `detect.js` | Pure detection algorithm (all thresholds and filters) |
-| `cluster.js` | Cross-date spatial clustering |
-| `geo.js` | UTM/WGS84 coordinate conversions |
-| `cli.js` | CLI: bulk detection with local or Lambda execution |
-| `lambda/handler.js` | AWS Lambda handler (single scene) |
-| `lambda/deploy.sh` | One-command Lambda deployment |
+```
+cli.js              CLI entry point (Bun)
+lib/                Shared detection library (browser + Node/Bun)
+  index.js          detect() async generator + re-exports
+  worker.js         Web Worker wrapper with automatic clustering
+  stac.js           STAC search with pagination and deduplication
+  cog.js            COG I/O, block enumeration, per-image orchestration
+  detect.js         Pure detection algorithm (all thresholds and filters)
+  cluster.js        Cross-date spatial clustering
+  geo.js            UTM/WGS84 coordinate conversions
+  vendor/           Vendored geotiff.js (browser) + environment-aware ESM wrapper
+lambda/             AWS Lambda (single-scene detection in us-west-2)
+  handler.js        Lambda handler wrapping detectImage
+  deploy.sh         One-command deployment
+data/               Detection output (CSV with WKT geometry)
+```

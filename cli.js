@@ -3,9 +3,9 @@
 // S2 Flare Detection CLI
 // Usage: bun cli.js --bbox W,S,E,N [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--cloud 50] [--mode local|lambda] [--out file.geojson]
 
-import { searchSTAC } from './stac.js';
-import { detectImage } from './cog.js';
-import { clusterDetections } from './cluster.js';
+import { searchSTAC } from './lib/stac.js';
+import { detectImage } from './lib/cog.js';
+import { clusterDetections } from './lib/cluster.js';
 
 // --- Argument parsing ---
 
@@ -77,13 +77,13 @@ Options:
 
 Examples:
   # Small area — single LNG terminal (Ras Laffan)
-  bun cli.js --bbox 51.44,25.84,51.62,25.98 --start 2025-01-01 --end 2025-03-01
+  bun cli.js --bbox 51.44,25.84,51.62,25.98 --start 2025-01-01 --end 2025-03-01 --out data/ras-laffan.csv
 
   # Larger area — Permian Basin slice
-  bun cli.js --bbox -104.0,31.5,-103.0,32.5 --start 2025-01-01 --end 2025-02-01 --cloud 50
+  bun cli.js --bbox -104.0,31.5,-103.0,32.5 --start 2025-01-01 --end 2025-02-01 --cloud 50 --out data/permian.csv
 
   # Full Permian via Lambda (co-located with S3 in us-west-2)
-  bun cli.js --bbox -104.5,30.5,-101.0,33.5 --start 2024-07-01 --end 2025-01-01 --mode lambda
+  bun cli.js --bbox -104.5,30.5,-101.0,33.5 --start 2024-07-01 --end 2025-01-01 --mode lambda --out data/permian-full.csv
 `);
 }
 
@@ -261,42 +261,35 @@ async function main() {
     const clusters = clusterDetections(detections, clusterOptions);
     process.stderr.write(`Clustered into ${clusters.length} sites\n`);
 
-    // Phase 4: Output as GeoJSON FeatureCollection
-    const geojson = {
-        type: 'FeatureCollection',
-        metadata: {
-            bbox: args.bbox,
-            start: args.start,
-            end: args.end,
-            mode: args.mode,
-            scenes: detections.length > 0 ? new Set(detections.map(d => d.date)).size : 0,
-            raw_detections: detections.length,
-            clusters: clusters.length,
-            elapsed_ms: Date.now() - t0,
-        },
-        features: clusters.map(c => ({
-            type: 'Feature',
-            id: c.id,
-            geometry: { type: 'Point', coordinates: [c.lon, c.lat] },
-            properties: {
-                max_b12: c.max_b12,
-                avg_b12: c.avg_b12,
-                detection_count: c.detection_count,
-                date_count: c.date_count,
-                first_date: c.first_date,
-                last_date: c.last_date,
-                persistence: c.persistence,
-                seasonal: c.seasonal,
-            },
-        })),
-    };
-
-    const output = JSON.stringify(geojson, null, 2);
+    // Phase 4: Output as CSV with WKT geometry (one row per detection)
+    // Compatible with ogr2ogr: ogr2ogr -f GPKG out.gpkg in.csv -oo GEOM_POSSIBLE_NAMES=detection_wkt -a_srs EPSG:4326
+    const lines = ['cluster_id,date,max_b12,avg_b12,pixels,detection_wkt,cluster_wkt,cluster_max_b12,cluster_avg_b12,cluster_date_count,cluster_persistence,cluster_seasonal'];
+    for (const c of clusters) {
+        const clusterWkt = `POINT(${c.lon} ${c.lat})`;
+        for (const d of c.detections) {
+            const detWkt = `POINT(${d.lon} ${d.lat})`;
+            lines.push([
+                c.id,
+                d.date,
+                d.max_b12,
+                c.avg_b12,
+                d.pixels,
+                detWkt,
+                clusterWkt,
+                c.max_b12,
+                c.avg_b12,
+                c.date_count,
+                c.persistence ?? '',
+                c.seasonal,
+            ].join(','));
+        }
+    }
+    const output = lines.join('\n') + '\n';
     if (args.out) {
         await Bun.write(args.out, output);
         process.stderr.write(`Written to ${args.out}\n`);
     } else {
-        process.stdout.write(output + '\n');
+        process.stdout.write(output);
     }
 
     const elapsed = Date.now() - t0;

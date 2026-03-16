@@ -4,7 +4,7 @@
 // Input:  { item: <STAC item from searchSTAC()>, bbox: [W,S,E,N] }
 // Output: { detections: [...], cloudFree: boolean, blocksProcessed: number, skippedOverview: boolean }
 
-import { detectImage } from '../cog.js';
+import { detectImage } from '../lib/cog.js';
 
 export async function handler(event) {
     const { item, bbox } = event;

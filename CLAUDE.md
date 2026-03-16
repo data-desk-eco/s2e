@@ -7,20 +7,22 @@ Shared Sentinel-2 SWIR flare detection library. Extracted from burnoff, consumed
 Pure ES modules throughout. No build step. Workers use `{ type: 'module' }`. Browser consumers have zero npm dependencies (vendored geotiff.js). CLI and Lambda use the npm `geotiff` package for Node.js/Bun compatibility.
 
 ```
-index.js          Public API: detect() async generator + re-exports
-worker.js         Web Worker wrapper (postMessage interface)
-stac.js           STAC search (Element84, async generator with pagination)
-cog.js            COG I/O (openCOG, readWindow, enumerateBlocks, detectImage)
-detect.js         Pure detection algorithm (typed arrays in, detections out)
-cluster.js        Cross-date spatial clustering (pure function)
-geo.js            UTM/WGS84 conversions + degree helpers
-cli.js            CLI: bulk detection with local or Lambda execution
+cli.js              CLI entry point (Bun)
+lib/
+  index.js          Public API: detect() async generator + re-exports
+  worker.js         Web Worker wrapper (postMessage interface)
+  stac.js           STAC search (Element84, async generator with pagination)
+  cog.js            COG I/O (openCOG, readWindow, enumerateBlocks, detectImage)
+  detect.js         Pure detection algorithm (typed arrays in, detections out)
+  cluster.js        Cross-date spatial clustering (pure function)
+  geo.js            UTM/WGS84 conversions + degree helpers
+  vendor/
+    geotiff.js      Vendored geotiff.js 2.1 (UMD, browser only)
+    geotiff-esm.js  Environment-aware wrapper (browser: vendored UMD, Node/Bun: npm)
 lambda/
-  handler.js      AWS Lambda handler wrapping detectImage (single scene)
-  deploy.sh       One-command Lambda deployment to us-west-2
-vendor/
-  geotiff.js      Vendored geotiff.js 2.1 (UMD, browser only)
-  geotiff-esm.js  Environment-aware wrapper (browser: vendored UMD, Node/Bun: npm)
+  handler.js        AWS Lambda handler wrapping detectImage (single scene)
+  deploy.sh         One-command Lambda deployment to us-west-2
+data/               Detection output (CSV with WKT, gitignored)
 ```
 
 ## Key Design Decisions
@@ -44,7 +46,7 @@ Bulk detection over arbitrary bounding boxes. Runs under Bun. Two execution mode
 
 The CLI shares all detection code with the browser library — `detectImage`, `searchSTAC`, `clusterDetections` are the exact same modules. The Lambda handler is 15 lines wrapping `detectImage`.
 
-Output is GeoJSON FeatureCollection with clustered flare sites.
+Output is CSV with WKT geometry (one row per detection, both detection and cluster locations). Compatible with ogr2ogr. Saved to `data/`.
 
 ## Lambda
 

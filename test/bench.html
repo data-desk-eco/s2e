@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>s2-flares: old vs new detectImage benchmark</title>
+    <style>
+        body { font-family: monospace; background: #1a1a1a; color: #ccc; padding: 20px; max-width: 900px; }
+        #log { white-space: pre-wrap; font-size: 12px; line-height: 1.5; }
+        .header { color: #fff; }
+        .pass { color: #6f6; }
+        .fail { color: #f66; }
+        .skip { color: #fa0; }
+        .speed { color: #6cf; }
+        .summary { color: #fff; border-top: 1px solid #555; padding-top: 8px; margin-top: 8px; }
+        button { margin: 4px; padding: 6px 12px; font-family: monospace; }
+        select, input { font-family: monospace; margin: 4px; padding: 4px; }
+        .controls { margin-bottom: 16px; }
+    </style>
+</head>
+<body>
+    <h3>Old vs New detectImage Benchmark</h3>
+    <div class="controls">
+        <label>Test site:
+            <select id="site">
+                <option value="ras-laffan">Ras Laffan (Qatar flares)</option>
+                <option value="permian">Permian Basin (Texas)</option>
+                <option value="basra">Basra (Iraq)</option>
+                <option value="custom">Custom bbox</option>
+            </select>
+        </label>
+        <label>Max scenes: <input type="number" id="maxScenes" value="6" min="1" max="50" style="width:50px"></label>
+        <label>Days back: <input type="number" id="daysBack" value="60" min="5" max="365" style="width:60px"></label>
+        <br>
+        <label id="customLabel" style="display:none">bbox (W,S,E,N): <input type="text" id="customBbox" value="" style="width:250px" placeholder="51.44,25.84,51.62,25.98"></label>
+        <br>
+        <button id="start">Run Benchmark</button>
+        <button id="cancel" disabled>Cancel</button>
+    </div>
+    <div id="log"></div>
+    <script type="module">
+        import { searchSTAC } from '../stac.js';
+        import { detectImage } from '../cog.js';
+        import { detectImageNew } from './cog-new.js';
+
+        const logEl = document.getElementById('log');
+        const startBtn = document.getElementById('start');
+        const cancelBtn = document.getElementById('cancel');
+        const siteSelect = document.getElementById('site');
+        const customLabel = document.getElementById('customLabel');
+
+        siteSelect.addEventListener('change', () => {
+            customLabel.style.display = siteSelect.value === 'custom' ? '' : 'none';
+        });
+
+        const SITES = {
+            'ras-laffan': [51.44, 25.84, 51.62, 25.98],
+            'permian':    [-103.6, 31.3, -103.4, 31.5],
+            'basra':      [47.5, 30.3, 47.8, 30.6],
+        };
+
+        function append(msg, cls) {
+            const span = document.createElement('span');
+            span.textContent = msg + '\n';
+            if (cls) span.className = cls;
+            logEl.appendChild(span);
+            logEl.scrollTop = logEl.scrollHeight;
+            console.log(msg);
+        }
+
+        function matchDetections(oldDets, newDets) {
+            // Compare by rounding lat/lon to 4dp and matching
+            const key = d => `${d.lat.toFixed(4)},${d.lon.toFixed(4)}`;
+            const oldSet = new Set(oldDets.map(key));
+            const newSet = new Set(newDets.map(key));
+            const matched = [...oldSet].filter(k => newSet.has(k)).length;
+            const oldOnly = oldDets.filter(d => !newSet.has(key(d)));
+            const newOnly = newDets.filter(d => !oldSet.has(key(d)));
+            return { matched, oldOnly, newOnly };
+        }
+
+        let abortController = null;
+
+        cancelBtn.addEventListener('click', () => {
+            if (abortController) abortController.abort();
+            startBtn.disabled = false;
+            cancelBtn.disabled = true;
+            append('\nCancelled.', 'fail');
+        });
+
+        startBtn.addEventListener('click', async () => {
+            logEl.innerHTML = '';
+            startBtn.disabled = true;
+            cancelBtn.disabled = false;
+            abortController = new AbortController();
+            const signal = abortController.signal;
+
+            const siteKey = siteSelect.value;
+            let bbox;
+            if (siteKey === 'custom') {
+                const parts = document.getElementById('customBbox').value.split(',').map(Number);
+                if (parts.length !== 4 || parts.some(isNaN)) {
+                    append('Invalid bbox', 'fail');
+                    startBtn.disabled = false;
+                    cancelBtn.disabled = true;
+                    return;
+                }
+                bbox = parts;
+            } else {
+                bbox = SITES[siteKey];
+            }
+
+            const maxScenes = parseInt(document.getElementById('maxScenes').value) || 6;
+            const daysBack = parseInt(document.getElementById('daysBack').value) || 60;
+            const end = new Date().toISOString().slice(0, 10);
+            const start = new Date(Date.now() - daysBack * 86400000).toISOString().slice(0, 10);
+
+            append(`${'='.repeat(70)}`, 'header');
+            append(`  Site: ${siteKey}  bbox: ${JSON.stringify(bbox)}`, 'header');
+            append(`  Range: ${start} to ${end}  (max ${maxScenes} scenes)`, 'header');
+            append(`${'='.repeat(70)}`, 'header');
+
+            try {
+                append('\nSearching STAC...');
+                const items = [];
+                for await (const item of searchSTAC(bbox, start, end, { signal })) {
+                    items.push(item);
+                }
+                append(`Found ${items.length} scenes, testing ${Math.min(maxScenes, items.length)}\n`);
+
+                const testItems = items.slice(0, maxScenes);
+
+                let oldTotalMs = 0, newTotalMs = 0;
+                let oldTotalDet = 0, newTotalDet = 0;
+                let newScenesSkipped = 0;
+                let allMatch = true;
+                let mismatches = [];
+
+                for (let i = 0; i < testItems.length; i++) {
+                    if (signal.aborted) break;
+                    const item = testItems[i];
+                    const label = `[${i + 1}/${testItems.length}] ${item.date} (${item.mgrs})`;
+                    append(label, 'header');
+
+                    // Run OLD
+                    const t0old = performance.now();
+                    const oldRes = await detectImage(item, bbox, { signal });
+                    const oldMs = performance.now() - t0old;
+
+                    if (signal.aborted) break;
+
+                    // Run NEW
+                    const t0new = performance.now();
+                    const newRes = await detectImageNew(item, bbox, { signal });
+                    const newMs = performance.now() - t0new;
+
+                    if (signal.aborted) break;
+
+                    oldTotalMs += oldMs;
+                    newTotalMs += newMs;
+                    oldTotalDet += oldRes.detections.length;
+                    newTotalDet += newRes.detections.length;
+                    if (newRes.skippedOverview) newScenesSkipped++;
+
+                    const speedup = (oldMs / Math.max(newMs, 1)).toFixed(1);
+
+                    append(`  OLD: ${oldMs.toFixed(0)}ms  ${oldRes.detections.length} det  blocks=${oldRes.blocksProcessed}  cloud=${oldRes.cloudFree ? 'free' : 'cloudy'}`);
+
+                    const skipTag = newRes.skippedOverview ? ' [OVERVIEW SKIP]' : '';
+                    append(`  NEW: ${newMs.toFixed(0)}ms  ${newRes.detections.length} det  blocks=${newRes.blocksProcessed}  cloud=${newRes.cloudFree ? 'free' : 'cloudy'}${skipTag}`);
+
+                    // Compare detections
+                    const { matched, oldOnly, newOnly } = matchDetections(oldRes.detections, newRes.detections);
+                    const match = oldOnly.length === 0 && newOnly.length === 0;
+
+                    if (match) {
+                        append(`  ${speedup}× speed  PARITY OK (${matched} detections)`, 'pass');
+                    } else {
+                        allMatch = false;
+                        mismatches.push({ date: item.date, mgrs: item.mgrs, oldOnly, newOnly });
+                        append(`  ${speedup}× speed  MISMATCH: ${oldOnly.length} old-only, ${newOnly.length} new-only`, 'fail');
+                        for (const d of oldOnly) {
+                            append(`    OLD-ONLY: [${d.lat.toFixed(4)}, ${d.lon.toFixed(4)}] B12=${d.max_b12.toFixed(2)}`, 'fail');
+                        }
+                        for (const d of newOnly) {
+                            append(`    NEW-ONLY: [${d.lat.toFixed(4)}, ${d.lon.toFixed(4)}] B12=${d.max_b12.toFixed(2)}`, 'fail');
+                        }
+                    }
+                    append('');
+                }
+
+                // Summary
+                append(`${'='.repeat(70)}`, 'summary');
+                append(`  OLD total: ${(oldTotalMs / 1000).toFixed(1)}s, ${oldTotalDet} detections`, 'summary');
+                append(`  NEW total: ${(newTotalMs / 1000).toFixed(1)}s, ${newTotalDet} detections`, 'summary');
+                append(`  Overview skips: ${newScenesSkipped}/${testItems.length} scenes`, 'summary');
+                append(`  Overall speedup: ${(oldTotalMs / Math.max(newTotalMs, 1)).toFixed(1)}×`, 'speed');
+                append(`  Detection parity: ${allMatch ? 'PASS' : 'FAIL — see mismatches above'}`, allMatch ? 'pass' : 'fail');
+                append(`${'='.repeat(70)}`, 'summary');
+
+                if (mismatches.length > 0) {
+                    append(`\n${mismatches.length} scene(s) with detection mismatches:`, 'fail');
+                    for (const m of mismatches) {
+                        append(`  ${m.date} (${m.mgrs}): ${m.oldOnly.length} old-only, ${m.newOnly.length} new-only`, 'fail');
+                    }
+                }
+
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    append(`\nERROR: ${err.message}`, 'fail');
+                    console.error(err);
+                }
+            }
+
+            startBtn.disabled = false;
+            cancelBtn.disabled = true;
+        });
+    </script>
+</body>
+</html>

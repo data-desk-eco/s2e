@@ -261,21 +261,21 @@ async function main() {
     const clusters = clusterDetections(detections, clusterOptions);
     process.stderr.write(`Clustered into ${clusters.length} sites\n`);
 
-    // Phase 4: Output as CSV with WKT geometry (one row per detection)
-    // Compatible with ogr2ogr: ogr2ogr -f GPKG out.gpkg in.csv -oo GEOM_POSSIBLE_NAMES=detection_wkt -a_srs EPSG:4326
-    const lines = ['cluster_id,date,max_b12,avg_b12,pixels,detection_wkt,cluster_wkt,cluster_max_b12,cluster_avg_b12,cluster_date_count,cluster_persistence,cluster_seasonal'];
+    // Phase 4: Output as CSV (one row per detection, both detection and cluster coords)
+    // For ogr2ogr: ogr2ogr out.gpkg in.csv -oo X_POSSIBLE_NAMES=det_lon -oo Y_POSSIBLE_NAMES=det_lat -a_srs EPSG:4326
+    const lines = ['cluster_id,date,max_b12,avg_b12,pixels,det_lon,det_lat,cluster_lon,cluster_lat,cluster_max_b12,cluster_avg_b12,cluster_date_count,cluster_persistence,cluster_seasonal'];
     for (const c of clusters) {
-        const clusterWkt = `POINT(${c.lon} ${c.lat})`;
         for (const d of c.detections) {
-            const detWkt = `POINT(${d.lon} ${d.lat})`;
             lines.push([
                 c.id,
                 d.date,
                 d.max_b12,
                 c.avg_b12,
                 d.pixels,
-                detWkt,
-                clusterWkt,
+                d.lon,
+                d.lat,
+                c.lon,
+                c.lat,
                 c.max_b12,
                 c.avg_b12,
                 c.date_count,
@@ -288,6 +288,17 @@ async function main() {
     if (args.out) {
         await Bun.write(args.out, output);
         process.stderr.write(`Written to ${args.out}\n`);
+        // Convert to parquet if duckdb is available
+        if (args.out.endsWith('.csv')) {
+            const parquetPath = args.out.replace(/\.csv$/, '.parquet');
+            try {
+                const { execSync } = await import('child_process');
+                execSync(`duckdb -c "COPY (SELECT * FROM '${args.out}') TO '${parquetPath}' (FORMAT PARQUET, COMPRESSION ZSTD)"`);
+                process.stderr.write(`Parquet: ${parquetPath}\n`);
+            } catch {
+                // duckdb not available — CSV is still written
+            }
+        }
     } else {
         process.stdout.write(output);
     }

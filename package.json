@@ -1,0 +1,12 @@
+{
+  "name": "s2-flares",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "s2-flares": "./cli.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-lambda": "^3.1010.0",
+    "geotiff": "^2.1.3"
+  }
+}

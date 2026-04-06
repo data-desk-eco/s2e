@@ -99,6 +99,7 @@ else
     # Wait for update to complete before updating config
     aws lambda wait function-updated --function-name "$FUNCTION_NAME" --region "$REGION"
 
+    # --architectures is fixed at create time and rejected by update-function-configuration.
     aws lambda update-function-configuration \
         --function-name "$FUNCTION_NAME" \
         --region "$REGION" \
@@ -106,7 +107,6 @@ else
         --handler "$HANDLER" \
         --memory-size "$MEMORY" \
         --timeout "$TIMEOUT" \
-        --architectures arm64 \
         --query 'FunctionArn' --output text
 fi
 

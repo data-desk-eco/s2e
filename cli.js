@@ -263,15 +263,18 @@ async function main() {
 
     // Phase 4: Output as CSV (one row per detection, both detection and cluster coords)
     // For ogr2ogr: ogr2ogr out.gpkg in.csv -oo X_POSSIBLE_NAMES=det_lon -oo Y_POSSIBLE_NAMES=det_lat -a_srs EPSG:4326
-    const lines = ['cluster_id,date,max_b12,avg_b12,pixels,det_lon,det_lat,cluster_lon,cluster_lat,cluster_max_b12,cluster_avg_b12,cluster_date_count,cluster_persistence,cluster_seasonal'];
+    const lines = ['cluster_id,date,max_b12,peak_b11,avg_b12,pixels,sun_elevation,sun_azimuth,det_lon,det_lat,cluster_lon,cluster_lat,cluster_max_b12,cluster_avg_b12,cluster_date_count,cluster_persistence,cluster_seasonal,cluster_median_b12_b11_ratio,cluster_min_sun_elevation,cluster_likely_glint'];
     for (const c of clusters) {
         for (const d of c.detections) {
             lines.push([
                 c.id,
                 d.date,
                 d.max_b12,
+                d.peak_b11 ?? '',
                 c.avg_b12,
                 d.pixels,
+                d.sun_elevation ?? '',
+                d.sun_azimuth ?? '',
                 d.lon,
                 d.lat,
                 c.lon,
@@ -281,6 +284,9 @@ async function main() {
                 c.date_count,
                 c.persistence ?? '',
                 c.seasonal,
+                c.median_b12_b11_ratio ?? '',
+                c.min_sun_elevation ?? '',
+                c.likely_glint ?? '',
             ].join(','));
         }
     }

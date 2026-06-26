@@ -19,7 +19,7 @@ Lambda use the npm `geotiff` package. The split is hidden behind
 `lib/vendor/geotiff-esm.js`, which loads the right one per environment.
 
 ```
-cli.js              Local CLI entry point (Bun)
+cli.js              CLI entry point (Bun): --bbox or --aoi geojson; local or --lambda fan-out
 lib/
   index.js          Public API barrel + detect() async generator
   detect.js         Pure block detector + tunable thresholds (DEFAULTS / LOOSE)
@@ -36,9 +36,9 @@ lib/
 lambda/
   handler.js        Lambda handler: detect | coverage mode, writes per-scene CSV to S3
   deploy.sh         One-command deploy to us-west-2 (function + IAM + S3 bucket)
-aoi/                Areas of interest for bulk runs (point catalogues + drivers)
-  collect-lng.sh    Fan the Lambda out over every global LNG export terminal (GEM)
-  collect.mjs       Generic multi-AOI fan-out (per-ProjectID envelope dedup, LOOSE)
+aoi/                Site catalogues that drive runs (raw source + a DuckDB .sql that
+                    fits it to the standard AOI geojson schema; see aoi/README.md)
+  lng-terminals.sql / .sh   Global LNG export terminals (GEM) → AOIs → Lambda fan-out
 ```
 
 ## Key Design Decisions
@@ -78,11 +78,21 @@ measure glint two different ways — both are kept, neither replaces the other.
 
 ## CLI
 
-Local in-process detection over a bbox (`bun cli.js --bbox W,S,E,N`). `--preset
-loose|default` selects thresholds. Shares all code with the browser/Lambda paths.
-Output is CSV (one row per detection, carrying cluster fields), auto-converted to
-Parquet if `duckdb` is on PATH. For large-area bulk collection use the Lambda +
-an S3-writing fan-out collector (permian-flaring's scripts/collect_s2.mjs).
+The single entrypoint, over one area (`--bbox W,S,E,N`) or many (`--aoi
+file.geojson` — one run per feature, its geometry bounds + `--buffer` km as the
+search box, its `id`/`name` tagging the output). `--preset loose|default` selects
+thresholds. Shares all code with the browser/Lambda paths.
+
+- **Local (default):** in-process detection + clustering; CSV out (one row per
+  detection carrying cluster fields), auto-converted to Parquet if `duckdb` is on PATH.
+- **Bulk (`--lambda FN`):** instead of detecting locally, fan each scene out to the
+  deployed Lambda, which writes per-scene CSVs to S3 (`--bucket`/`--prefix`, per-AOI
+  prefix `<prefix>/<id>/`); resumable, scoring happens downstream. This folds the old
+  bespoke collector into the CLI — there is no separate fan-out script.
+
+AOIs are a plain geojson FeatureCollection (features with `id`/`name`). The burden
+of fitting a vendor dataset to that schema (filtering, dedup, geometry) lives in a
+small DuckDB `.sql` kept beside the data in `aoi/`, not in the tool.
 
 ## Lambda
 

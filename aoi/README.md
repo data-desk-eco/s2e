@@ -1,35 +1,38 @@
-# aoi — areas of interest for bulk runs
+# aoi — areas of interest
 
-Region definitions that drive large-area Lambda collection runs. The Permian basin
-run uses a single bbox (permian-flaring's `config.sh`); broader runs derive many
-AOIs from a point catalogue here.
+Site catalogues that drive detection runs. The s2-flares CLI is the single
+entrypoint: `--aoi <file.geojson>` runs detection over every feature (its geometry
+bounds + `--buffer` km is the search box; the feature's `id`/`name` properties tag
+the output). Any GeoJSON works — the **standard AOI schema** is just a
+FeatureCollection whose features carry `id` and `name` properties.
+
+Each dataset is two files kept side by side: the raw vendor source, and a small
+**DuckDB `.sql`** that fits it to the AOI schema. The SQL carries all the dataset
+quirks (filtering, dedup, geometry) so the CLI stays generic.
 
 ## LNG export terminals (global)
 
-`lng-terminals-2025-09.geojson` — Global Energy Monitor [Global Gas Infrastructure
-Tracker](https://globalenergymonitor.org/projects/global-gas-infrastructure-tracker/),
-LNG Terminals, 2025-09 release. 1198 features (export + import). One point per
-liquefaction train/unit.
+| file | role |
+|---|---|
+| `lng-terminals-2025-09.geojson` | raw source — Global Energy Monitor [Global Gas Infrastructure Tracker](https://globalenergymonitor.org/projects/global-gas-infrastructure-tracker/), LNG Terminals, 2025-09 (1198 features, one point per train) |
+| `lng-terminals.sql` | transform → standard AOIs (export-only, train dedup, envelopes) |
+| `lng-terminals.geojson` | built AOIs: 81 export terminals, one padded-envelope polygon each |
+| `lng-terminals.sh` | run it: build the AOIs, then fan the CLI out to the Lambda |
 
-`collect-lng.sh` → `collect.mjs` fan the detection Lambda out over every **export**
-terminal:
-
-- **Dedup.** All trains of a terminal share a GEM `ProjectID`, so we group by it
-  and scan the padded (~3 km) envelope of a terminal's units **once** — an N-train
-  terminal is one AOI, not N overlapping boxes. 463 export features → 253 terminals.
-- **Status filter.** Defaults to physically-built statuses
-  (`operating,construction,idled,mothballed,retired`); set `STATUS=all` to include
-  proposed/cancelled/shelved too.
-- **Preset.** Recall-first `LOOSE`; quality scoring is downstream (see `lib/score.js`).
-- **Output.** One CSV per scene at
-  `s3://$S3_BUCKET/$S3_PREFIX/<ProjectID>/<mgrs>_<date>.csv` (default prefix `lng`,
-  separate from the Permian `s2` prefix). Atomic writes → resumable.
+**Dedup.** GEM lists each liquefaction train/unit separately, but all units of a
+terminal share a `ProjectID`. The SQL groups by it and emits the bounding envelope
+of a terminal's units — so an N-train terminal is **one** AOI, not N overlapping
+boxes (463 export features → 253 terminals; 81 under the default built-status
+filter). Widen the SQL's status `IN (...)` list for proposed/cancelled too.
 
 ```sh
-bash lambda/deploy.sh                 # once, if not already deployed
-DRY_RUN=1 bash aoi/collect-lng.sh     # report the plan (AOI + scene counts), no invokes
-bash aoi/collect-lng.sh               # run it
+bash lambda/deploy.sh          # once, if the detector Lambda isn't deployed
+bash aoi/lng-terminals.sh      # build AOIs (duckdb) + fan out to the Lambda (loose)
 ```
 
-Tunables (env): `START`/`END`, `STATUS`, `PAD`, `S2_CONCURRENCY`, `LIMIT` (cap AOIs
-for testing), `FUNCTION_NAME`, `REGION`, `S3_BUCKET`, `S3_PREFIX`.
+The run is recall-first (`LOOSE`); each scene's detections land at
+`s3://$S3_BUCKET/lng/<ProjectID>/<mgrs>_<date>.csv` (atomic writes → resumable).
+Quality scoring is downstream (`lib/score.js`). Tunables are env vars in the `.sh`
+(`START`/`END`, `S3_BUCKET`, `S2_CONCURRENCY`, …). To preview locally without the
+Lambda, point the CLI at a few features: `bun cli.js --aoi <subset>.geojson
+--preset loose --out out.csv`.

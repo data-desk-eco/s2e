@@ -26,7 +26,10 @@ S3_PREFIX="${S3_PREFIX:-s2}"
 MAX_AOI_KM2="${MAX_AOI_KM2:-2500}"
 DEFAULT_DAYS="${DEFAULT_DAYS:-90}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-10}"
-ENV_VARS="Variables={S2_BUCKET=${S3_BUCKET},S2_PREFIX=${S3_PREFIX},MAX_AOI_KM2=${MAX_AOI_KM2},DEFAULT_DAYS=${DEFAULT_DAYS}}"
+# CACHE_PREFIX namespaces the web API's per-scene parquet cache, kept apart from
+# the bulk handler's CSV prefix (S2_PREFIX) so the two collections never mix.
+CACHE_PREFIX="${CACHE_PREFIX:-flares}"
+ENV_VARS="Variables={S2_BUCKET=${S3_BUCKET},S2_PREFIX=${S3_PREFIX},CACHE_PREFIX=${CACHE_PREFIX},MAX_AOI_KM2=${MAX_AOI_KM2},DEFAULT_DAYS=${DEFAULT_DAYS}}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -44,13 +47,16 @@ cp "$PROJECT_DIR/lib/vendor/geotiff-esm.js" "$BUILD_DIR/lib/vendor/"
 # Note: vendored geotiff.js (UMD) is NOT needed — Node uses the npm geotiff package.
 # run.js is the shared AOI pipeline (api.handler); both handlers ship in every zip.
 cp "$PROJECT_DIR/lib/run.js" "$BUILD_DIR/lib/"
-cp "$PROJECT_DIR/lambda/handler.js" "$PROJECT_DIR/lambda/api.js" "$BUILD_DIR/lambda/"
+# scene-store.js is the web API's per-scene parquet cache (api.handler).
+cp "$PROJECT_DIR/lambda/handler.js" "$PROJECT_DIR/lambda/api.js" \
+   "$PROJECT_DIR/lambda/scene-store.js" "$BUILD_DIR/lambda/"
 
-# Install only geotiff. AWS SDK v3 (@aws-sdk/client-s3) is provided by the
-# nodejs22.x runtime, so it is not bundled and the zip stays small.
+# Bundle geotiff (COG reads) + hyparquet/-writer (the scene cache's parquet I/O).
+# AWS SDK v3 (@aws-sdk/client-s3) is provided by the nodejs22.x runtime, so it is
+# not bundled and the zip stays small.
 cd "$BUILD_DIR"
 cat > package.json <<'PKGJSON'
-{ "type": "module", "dependencies": { "geotiff": "^2.1.3" } }
+{ "type": "module", "dependencies": { "geotiff": "^2.1.3", "hyparquet": "^1.26.1", "hyparquet-writer": "^0.16.1" } }
 PKGJSON
 npm install --omit=dev 2>&1 | tail -3
 
@@ -87,14 +93,15 @@ else
     echo "Using existing role: $ROLE_ARN"
 fi
 
-# Let the function write per-scene CSVs to the detections bucket (idempotent).
-echo "=== Granting S3 write on $S3_BUCKET ==="
+# Let the function read + write objects in the detections bucket (idempotent).
+# GetObject is what the web API's per-scene parquet cache needs to serve a hit.
+echo "=== Granting S3 read/write on $S3_BUCKET ==="
 aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name s2-write \
     --policy-document '{
         "Version": "2012-10-17",
         "Statement": [{
             "Effect": "Allow",
-            "Action": "s3:PutObject",
+            "Action": ["s3:PutObject", "s3:GetObject"],
             "Resource": "arn:aws:s3:::'"${S3_BUCKET}"'/*"
         }]
     }'

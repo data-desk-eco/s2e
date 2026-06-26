@@ -26,9 +26,15 @@
 import { runAOI } from '../lib/run.js';
 import { LOOSE, resolveThresholds } from '../lib/detect.js';
 import { geomBbox, padBbox, bboxAreaKm2 } from '../lib/geo.js';
+import { makeSceneStore } from './scene-store.js';
 
 const MAX_AOI_KM2 = Number(process.env.MAX_AOI_KM2 || 2500);
 const DEFAULT_DAYS = Number(process.env.DEFAULT_DAYS || 90);
+// Per-scene parquet cache: present iff a bucket is configured. The map's repeated,
+// overlapping viewports turn into whole-tile detections cached once and reused —
+// the resource saver and the growing collection are the same S3 objects.
+const CACHE_BUCKET = process.env.S2_BUCKET;
+const CACHE_PREFIX = process.env.CACHE_PREFIX || 'flares';
 const ymd = d => d.toISOString().slice(0, 10);
 
 // A cluster → a GeoJSON point Feature. The per-date `detections` array is dropped
@@ -55,6 +61,7 @@ function parse(event) {
         bbox: bbox && padBbox(bbox, Number(s.buffer) || 0),
         start: s.start || ymd(new Date(now - DEFAULT_DAYS * 864e5)),
         end: s.end || ymd(now),
+        preset: s.preset === 'loose' ? 'loose' : 'default',
         thresholds: s.preset === 'loose' ? resolveThresholds(LOOSE) : undefined,
         // Map-friendly clustering: surface every scored detection (minDates 1) and
         // let the client filter by the score slider; the two knobs that matter are
@@ -63,6 +70,9 @@ function parse(event) {
             scoreThreshold: Number(s.minScore) || 0 },
         stream: s.stream === '1' || s.stream === true ||
             (event.headers?.accept || '').includes('text/event-stream'),
+        // raw=1 streams per-scene RAW detections (not clusters), for clients that
+        // cluster themselves (e.g. burnoff, keeping its instant client-side sliders).
+        raw: s.raw === '1' || s.raw === true,
     };
 }
 
@@ -80,15 +90,31 @@ export const handler = awslambda.streamifyResponse(async (event, raw) => {
     if (area > MAX_AOI_KM2)
         return fail(413, `AOI ${Math.round(area)} km² exceeds the ${MAX_AOI_KM2} km² cap — zoom in`);
 
-    const { bbox, start, end, thresholds, cluster } = req;
-    if (req.stream) {
+    const { bbox, start, end, preset, thresholds, cluster } = req;
+    const store = CACHE_BUCKET && makeSceneStore({
+        bucket: CACHE_BUCKET, prefix: CACHE_PREFIX, preset, thresholds });
+    if (req.stream || req.raw) {
         const s = reply(200, 'application/x-ndjson');
-        await runAOI(bbox, start, end, { thresholds, cluster, onEvent: ev => s.write(JSON.stringify(
-            ev.type === 'clusters' ? { type: 'clusters', features: ev.clusters.map(feature) } : ev) + '\n') });
+        const write = o => s.write(JSON.stringify(o) + '\n');
+        let items = 0;
+        // raw: pass scene events through verbatim (they carry detections + the
+        // scene's epsg/B12 href) and end with `done`. default: strip those fields
+        // from scene events and turn the terminal `clusters` event into features.
+        const onEvent = req.raw
+            ? ev => {
+                if (ev.type === 'start') items = ev.scenes;
+                if (ev.type === 'clusters') write({ type: 'done', scenes: items }); else write(ev);
+            }
+            : ev => {
+                if (ev.type === 'clusters') return write({ type: 'clusters', features: ev.clusters.map(feature) });
+                if (ev.type === 'scene') { const { detections, epsg, cog_b12, ...rest } = ev; return write(rest); }
+                write(ev);
+            };
+        await runAOI(bbox, start, end, { thresholds, cluster, store, onEvent });
         s.end();
         return;
     }
-    const { clusters, scenes } = await runAOI(bbox, start, end, { thresholds, cluster });
+    const { clusters, scenes } = await runAOI(bbox, start, end, { thresholds, cluster, store });
     const s = reply(200, 'application/json');
     s.write(JSON.stringify({ type: 'FeatureCollection', scenes, features: clusters.map(feature) }));
     s.end();

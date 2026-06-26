@@ -39,6 +39,9 @@ lambda/
   handler.js        Per-scene bulk handler: detect | coverage mode, per-scene CSV to S3
   api.js            Web API handler: geometry + dates → clustered GeoJSON, over a
                     streaming Function URL (buffered JSON or live NDJSON), area-capped
+  scene-store.js    Per-scene read-through cache: whole-tile detections as parquet
+                    in S3, keyed (preset, mgrs tile, date); the web API's resource
+                    saver and its growing duckdb-queryable collection in one
   deploy.sh         One-command deploy to us-west-2 (function + IAM + S3 bucket;
                     HANDLER=lambda/api.handler PUBLIC_URL=1 deploys the web API)
 aoi/                Site catalogues that drive runs (raw source + a DuckDB .sql that
@@ -139,12 +142,49 @@ GeoJSON. It calls `runAOI` (lib/run.js) — the whole-AOI pipeline the CLI also 
 - **Map-friendly clustering.** Defaults to `minDates=1` so every scored detection
   surfaces; the client filters by the `total_score` slider. `minScore`/`minDates`
   are request overrides. Bulk-research gating (`minDates=4`) stays the CLI's job.
-- **Request:** `{ geometry | bbox, start?, end?, buffer?, preset?, stream?, minScore?, minDates? }`
+- **Raw mode (`raw=1`).** Streams per-scene NDJSON `scene` events carrying the
+  scene's *raw* detections (+ its `epsg` and B12 COG href) and ends with `done`,
+  instead of server-side clusters. For clients that cluster themselves and want it
+  to stay interactive — burnoff consumes this and keeps its instant client-side
+  cluster/intensity sliders, using the Lambda only as the detection engine.
+- **Request:** `{ geometry | bbox, start?, end?, buffer?, preset?, stream?, raw?, minScore?, minDates? }`
   (query string for GET, JSON body for POST; body wins). Dates default to the last
   `DEFAULT_DAYS` (90).
 - Deploy: `FUNCTION_NAME=s2-flares-api HANDLER=lambda/api.handler PUBLIC_URL=1 bash
   lambda/deploy.sh` — same script, adds the streaming Function URL + public-invoke
   permission + reserved concurrency, and prints the URL.
+
+## Scene cache (lambda/scene-store.js)
+
+The web API is a read-through cache, not a recompute-every-pan endpoint. The cache
+atom is a whole scene — one `(preset, mgrs tile, date)` — because a flare at
+`(lon,lat)` on a date is a fact independent of the viewport that surfaced it. So
+we cache the **detections** (the expensive COG-read step); clustering stays a cheap
+pure function run on read over whatever viewport + dates a request asks for. Don't
+cache clusters (they'd be stale the moment the date slider moves) or the viewport
+(pan one pixel → new key, ~0 % hit rate).
+
+- **Whole-tile on miss.** `runAOI(store)` detects the entire tile footprint
+  (`item.bbox`), not just the viewport, then filters the result to the bbox before
+  clustering. That is what makes "object present == this tile@date is done" honest
+  and grows a *complete* collection: the first viewport into a cold tile pays the
+  COG reads; every later viewport in it (and the next user) reads for free. The
+  streaming NDJSON path hides first-touch latency — pins land per scene.
+- **Parquet, hive-partitioned.** `<CACHE_PREFIX>/<preset>/tile=<mgrs>/<date>.parquet`
+  — so the whole collection is one `read_parquet('s3://…/**/*.parquet',
+  hive_partitioning=true)` away in DuckDB. Columns are the detector's own field
+  names (a cache read feeds `clusterDetections` directly). Preset namespaces the
+  key — LOOSE and DEFAULT detections must never be served to each other.
+- **Empty scenes are cached too.** Most tile-dates have no flares; a zero-row
+  parquet is still written (presence == done). Cloud-free status — the persistence
+  denominator, needed even with zero detections — rides in S3 object metadata.
+- **Parquet I/O is pure-JS** (`hyparquet` / `hyparquet-writer`, snappy), bundled in
+  the deploy zip; no DuckDB binary in the Lambda. The IAM role gets `s3:GetObject`
+  alongside `PutObject`. Enabled whenever `S2_BUCKET` is set; `CACHE_PREFIX`
+  (default `flares`) keeps it apart from the bulk handler's CSV prefix.
+- **v1 is synchronous read-through.** Concurrent cold-region requests can double-
+  compute a tile (last write wins, harmless); graduating to an SQS-decoupled
+  compute path is the planned step when concurrent load justifies the extra state.
 
 ## Consumers
 

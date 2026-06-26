@@ -22,6 +22,8 @@ Lambda use the npm `geotiff` package. The split is hidden behind
 cli.js              CLI entry point (Bun): --bbox or --aoi geojson; local or --lambda fan-out
 lib/
   index.js          Public API barrel + detect() async generator
+  run.js            Whole-AOI pipeline (search → concurrent detect → cluster);
+                    shared by the CLI local mode and the Lambda web API
   detect.js         Pure block detector + tunable thresholds (DEFAULTS / LOOSE)
   cog.js            COG I/O (openCOG, readWindow, enumerateBlocks, detectImage)
   coverage.js       SCL clear-sky sampling — the n_clear_obs persistence denominator
@@ -34,8 +36,11 @@ lib/
     geotiff.js      Vendored geotiff.js 2.1 (UMD, browser only)
     geotiff-esm.js  Environment-aware wrapper (browser: UMD, Node/Bun/Deno: npm)
 lambda/
-  handler.js        Lambda handler: detect | coverage mode, writes per-scene CSV to S3
-  deploy.sh         One-command deploy to us-west-2 (function + IAM + S3 bucket)
+  handler.js        Per-scene bulk handler: detect | coverage mode, per-scene CSV to S3
+  api.js            Web API handler: geometry + dates → clustered GeoJSON, over a
+                    streaming Function URL (buffered JSON or live NDJSON), area-capped
+  deploy.sh         One-command deploy to us-west-2 (function + IAM + S3 bucket;
+                    HANDLER=lambda/api.handler PUBLIC_URL=1 deploys the web API)
 aoi/                Site catalogues that drive runs (raw source + a DuckDB .sql that
                     fits it to the standard AOI geojson schema; see aoi/README.md)
   lng-terminals.sql / .sh   Global LNG export terminals (GEM) → AOIs → Lambda fan-out
@@ -111,6 +116,35 @@ are in-region. One invocation = one scene.
 - Deploy: `bash lambda/deploy.sh` — creates the IAM role, the detections bucket,
   and the function. All names are env-overridable (`FUNCTION_NAME`, `S3_BUCKET`,
   `MEMORY`, …) so a consumer can deploy the same code under its own names.
+
+## Web API (lambda/api.js)
+
+A second handler turns the same `lib/` core into an HTTP endpoint: POST/GET a
+geometry (or `bbox`) + date range, get back clustered, scored flare detections as
+GeoJSON. It calls `runAOI` (lib/run.js) — the whole-AOI pipeline the CLI also uses
+— so search → detect → cluster lives in one place, not duplicated per entry point.
+
+- **Front door is a Lambda Function URL, not API Gateway.** One handler, built-in
+  HTTPS + CORS, no 29 s gateway cap. Deployed in `RESPONSE_STREAM` invoke mode so a
+  single handler serves both response shapes:
+  - default — one JSON `FeatureCollection`, written when detection completes.
+  - `?stream=1` (or `Accept: text/event-stream`) — newline-delimited JSON events
+    (`start` / `scene` / final `clusters`) as each scene finishes. Built for an
+    interactive map: live pins + a progress bar while panning. Clustering is
+    cross-date, so the map features arrive only in the terminal `clusters` event.
+- **Hard area cap.** `MAX_AOI_KM2` (default 2500) rejects oversized AOIs with 413
+  *before any COG read* — a public endpoint that bounds the work per request. The
+  natural client is a map viewport, which is small; "zoom in" is the contract.
+  Pair it with `MAX_CONCURRENCY` reserved concurrency as a cost ceiling.
+- **Map-friendly clustering.** Defaults to `minDates=1` so every scored detection
+  surfaces; the client filters by the `total_score` slider. `minScore`/`minDates`
+  are request overrides. Bulk-research gating (`minDates=4`) stays the CLI's job.
+- **Request:** `{ geometry | bbox, start?, end?, buffer?, preset?, stream?, minScore?, minDates? }`
+  (query string for GET, JSON body for POST; body wins). Dates default to the last
+  `DEFAULT_DAYS` (90).
+- Deploy: `FUNCTION_NAME=s2-flares-api HANDLER=lambda/api.handler PUBLIC_URL=1 bash
+  lambda/deploy.sh` — same script, adds the streaming Function URL + public-invoke
+  permission + reserved concurrency, and prints the URL.
 
 ## Consumers
 

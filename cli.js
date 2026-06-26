@@ -17,9 +17,9 @@
 // Usage: bun cli.js (--bbox W,S,E,N | --aoi file.geojson) [options]
 
 import { searchSTAC } from './lib/stac.js';
-import { detectImage } from './lib/cog.js';
-import { clusterDetections } from './lib/cluster.js';
-import { DEFAULTS, LOOSE, resolveThresholds } from './lib/detect.js';
+import { runAOI } from './lib/run.js';
+import { LOOSE, resolveThresholds } from './lib/detect.js';
+import { geomBbox, padBbox } from './lib/geo.js';
 
 function parseArgs(argv) {
     const args = { maxCloudCover: 100, concurrency: 4, preset: 'default', buffer: 0,
@@ -106,30 +106,14 @@ Examples:
 }
 
 // --- AOIs --------------------------------------------------------------------
-// Bounding box of any GeoJSON geometry (Point / Polygon / Multi*).
-function geomBbox(geom) {
-    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-    (function walk(c) {
-        if (typeof c[0] === 'number') {
-            w = Math.min(w, c[0]); e = Math.max(e, c[0]);
-            s = Math.min(s, c[1]); n = Math.max(n, c[1]);
-        } else for (const x of c) walk(x);
-    })(geom.coordinates);
-    return [w, s, e, n];
-}
-// Expand a bbox by `km` on every side (latitude-corrected).
-function pad([w, s, e, n], km) {
-    if (!km) return [w, s, e, n];
-    const dlat = km / 111, dlon = km / (111 * Math.cos((s + n) / 2 * Math.PI / 180));
-    return [w - dlon, s - dlat, e + dlon, n + dlat];
-}
+// geomBbox / padBbox now live in lib/geo.js (shared with the web API).
 async function loadAOIs(args) {
     if (args.bbox) return [{ id: 'aoi', name: '', bbox: args.bbox }];
     const gj = JSON.parse(await Bun.file(args.aoi).text());
     return (gj.features || []).map((f, i) => ({
         id: f.properties?.id ?? f.properties?.ProjectID ?? String(i),
         name: f.properties?.name ?? f.properties?.TerminalName ?? '',
-        bbox: pad(geomBbox(f.geometry), args.buffer),
+        bbox: padBbox(geomBbox(f.geometry), args.buffer),
     }));
 }
 
@@ -140,25 +124,13 @@ async function scenes(aoi, args) {
 }
 
 // --- local detection ---------------------------------------------------------
-async function detectAOI(aoi, args, thresholds) {
-    const items = await scenes(aoi, args);
-    process.stderr.write(`  ${aoi.id} ${aoi.name}: ${items.length} scenes\n`);
-    const detections = [], observations = new Map();
-    let idx = 0;
-    async function worker() {
-        while (idx < items.length) {
-            const item = items[idx++];
-            try {
-                const r = await detectImage(item, aoi.bbox, { thresholds });
-                observations.set(item.date, { cloudFree: r.cloudFree });
-                for (const d of r.detections) { d.aoi_id = aoi.id; d.aoi_name = aoi.name; detections.push(d); }
-            } catch (err) {
-                process.stderr.write(`    ${item.date} ${item.mgrs} ERROR: ${err.message}\n`);
-            }
-        }
-    }
-    await Promise.all(Array.from({ length: Math.min(args.concurrency, items.length) }, worker));
-    return { detections, observations };
+// Search + concurrent detect + cluster for one AOI, via the shared pipeline.
+function detectAOI(aoi, args, thresholds) {
+    return runAOI(aoi.bbox, args.start, args.end, {
+        thresholds, concurrency: args.concurrency, maxCloudCover: args.maxCloudCover,
+        cluster: { minDates: args.minDates ?? 1, minAvgB12: args.minAvgB12 ?? 0.5,
+            scoreThreshold: args.scoreThreshold ?? 0 },
+    });
 }
 
 // --- Lambda fan-out ----------------------------------------------------------
@@ -218,18 +190,16 @@ async function main() {
         return;
     }
 
-    // Local: detect, cluster per-AOI, emit one CSV carrying detection + cluster fields.
-    const thresholds = args.preset === 'loose' ? resolveThresholds(LOOSE) : resolveThresholds(DEFAULTS);
+    // Local: detect + cluster per-AOI, emit one CSV carrying detection + cluster fields.
+    const thresholds = args.preset === 'loose' ? resolveThresholds(LOOSE) : undefined;
     const lines = ['aoi_id,aoi_name,cluster_id,date,max_b12,avg_b12,pixels,det_lon,det_lat,cluster_lon,cluster_lat,cluster_max_b12,cluster_total_score,cluster_date_count,cluster_persistence,cluster_seasonal'];
     let nClusters = 0;
     for (const aoi of aois) {
-        const { detections, observations } = await detectAOI(aoi, args, thresholds);
-        const clusters = clusterDetections(detections, { observations,
-            minDates: args.minDates ?? 1, minAvgB12: args.minAvgB12 ?? 0.5,
-            scoreThreshold: args.scoreThreshold ?? 0 });
+        const { clusters, scenes: nScenes } = await detectAOI(aoi, args, thresholds);
+        process.stderr.write(`  ${aoi.id} ${aoi.name}: ${nScenes} scenes, ${clusters.length} clusters\n`);
         nClusters += clusters.length;
         for (const c of clusters) for (const d of c.detections) lines.push([
-            c.detections[0].aoi_id ?? aoi.id, JSON.stringify(aoi.name), c.id, d.date,
+            aoi.id, JSON.stringify(aoi.name), c.id, d.date,
             d.max_b12, c.avg_b12, d.pixels, d.lon, d.lat, c.lon, c.lat, c.max_b12,
             c.total_score?.toFixed(3) ?? '', c.date_count, c.persistence ?? '', c.seasonal,
         ].join(','));

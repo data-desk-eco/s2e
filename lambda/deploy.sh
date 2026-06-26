@@ -11,7 +11,9 @@ FUNCTION_NAME="${FUNCTION_NAME:-s2-flares-detect}"
 REGION="${REGION:-us-west-2}"
 ROLE_NAME="${ROLE_NAME:-s2-flares-lambda-role}"
 RUNTIME="nodejs22.x"
-HANDLER="lambda/handler.handler"
+# Override HANDLER to deploy the web API instead of the per-scene bulk shell:
+#   FUNCTION_NAME=s2-flares-api HANDLER=lambda/api.handler PUBLIC_URL=1 bash lambda/deploy.sh
+HANDLER="${HANDLER:-lambda/handler.handler}"
 # More memory => more vCPU + network bandwidth; the detector is byte-range-read
 # bound, so this cuts wall-clock on heavy interior tiles (cost is GB-seconds and
 # duration drops roughly in proportion, so it is ~cost-neutral).
@@ -19,7 +21,12 @@ MEMORY="${MEMORY:-3008}"
 TIMEOUT="${TIMEOUT:-600}"
 S3_BUCKET="${S3_BUCKET:-s2-flares-$(aws sts get-caller-identity --query Account --output text)}"
 S3_PREFIX="${S3_PREFIX:-s2}"
-ENV_VARS="Variables={S2_BUCKET=${S3_BUCKET},S2_PREFIX=${S3_PREFIX}}"
+# Web-API guardrails (ignored by the per-scene handler). MAX_AOI_KM2 is the hard
+# area cap; MAX_CONCURRENCY caps a public URL's blast radius (-1 = unreserved).
+MAX_AOI_KM2="${MAX_AOI_KM2:-2500}"
+DEFAULT_DAYS="${DEFAULT_DAYS:-90}"
+MAX_CONCURRENCY="${MAX_CONCURRENCY:-10}"
+ENV_VARS="Variables={S2_BUCKET=${S3_BUCKET},S2_PREFIX=${S3_PREFIX},MAX_AOI_KM2=${MAX_AOI_KM2},DEFAULT_DAYS=${DEFAULT_DAYS}}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -35,7 +42,9 @@ for f in cog.js coverage.js detect.js geo.js stac.js cluster.js score.js index.j
 done
 cp "$PROJECT_DIR/lib/vendor/geotiff-esm.js" "$BUILD_DIR/lib/vendor/"
 # Note: vendored geotiff.js (UMD) is NOT needed — Node uses the npm geotiff package.
-cp "$PROJECT_DIR/lambda/handler.js" "$BUILD_DIR/lambda/"
+# run.js is the shared AOI pipeline (api.handler); both handlers ship in every zip.
+cp "$PROJECT_DIR/lib/run.js" "$BUILD_DIR/lib/"
+cp "$PROJECT_DIR/lambda/handler.js" "$PROJECT_DIR/lambda/api.js" "$BUILD_DIR/lambda/"
 
 # Install only geotiff. AWS SDK v3 (@aws-sdk/client-s3) is provided by the
 # nodejs22.x runtime, so it is not bundled and the zip stays small.
@@ -141,7 +150,36 @@ else
         --query 'FunctionArn' --output text
 fi
 
+aws lambda wait function-updated --function-name "$FUNCTION_NAME" --region "$REGION" 2>/dev/null || true
+
+# --- public web API: streaming Function URL (opt-in) -------------------------
+# PUBLIC_URL=1 fronts the function with an HTTPS Function URL in RESPONSE_STREAM
+# mode (so api.handler can stream NDJSON), open CORS, public auth, and reserved
+# concurrency as a cost/abuse ceiling. No API Gateway — the URL is the whole API.
+if [ "${PUBLIC_URL:-}" = "1" ]; then
+    echo "=== Configuring public Function URL ==="
+    # Array (not a string) so the CORS JSON stays one arg — its [ ] * are bash globs.
+    URL_CFG=(--auth-type NONE --invoke-mode RESPONSE_STREAM --cors '{"AllowOrigins":["*"],"AllowMethods":["GET","POST"]}')
+    aws lambda create-function-url-config --function-name "$FUNCTION_NAME" --region "$REGION" "${URL_CFG[@]}" >/dev/null 2>&1 \
+        || aws lambda update-function-url-config --function-name "$FUNCTION_NAME" --region "$REGION" "${URL_CFG[@]}" >/dev/null
+    # Public unauthenticated invoke (idempotent).
+    aws lambda add-permission --function-name "$FUNCTION_NAME" --region "$REGION" \
+        --statement-id FunctionURLPublic --action lambda:InvokeFunctionUrl \
+        --principal '*' --function-url-auth-type NONE >/dev/null 2>&1 || true
+    # Cap concurrent executions so a public endpoint can't run away on cost.
+    if [ "$MAX_CONCURRENCY" -ge 0 ] 2>/dev/null; then
+        aws lambda put-function-concurrency --function-name "$FUNCTION_NAME" --region "$REGION" \
+            --reserved-concurrent-executions "$MAX_CONCURRENCY" >/dev/null
+    fi
+    FUNCTION_URL=$(aws lambda get-function-url-config --function-name "$FUNCTION_NAME" --region "$REGION" \
+        --query 'FunctionUrl' --output text)
+fi
+
 echo ""
 echo "=== Deployed ==="
 echo "Function: $FUNCTION_NAME ($REGION, ${MEMORY}MB, ${TIMEOUT}s, arm64)"
 echo "Output:   s3://${S3_BUCKET}/${S3_PREFIX}/"
+if [ -n "${FUNCTION_URL:-}" ]; then
+    echo "Web API:  $FUNCTION_URL (cap ${MAX_AOI_KM2} km², ≤${MAX_CONCURRENCY} concurrent)"
+    echo "  curl '${FUNCTION_URL}?bbox=-104,31.5,-103,32.5&stream=1'"
+fi

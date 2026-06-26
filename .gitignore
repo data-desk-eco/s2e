@@ -2,3 +2,5 @@ node_modules/
 lambda/deploy.zip
 data/*.csv
 data/*.parquet
+.env
+package-lock.json

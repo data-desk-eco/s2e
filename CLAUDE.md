@@ -20,17 +20,22 @@ Lambda use the npm `geotiff` package. The split is hidden behind
 
 ```
 cli.js              CLI entry point (Bun): --bbox or --aoi geojson; local or --lambda fan-out
+cf-run.js           EU-sovereign bulk runner (Node): the handler.js fan-out, but
+                    detect runs locally on a CloudFerro box via cog-gdal over eodata
 lib/
   index.js          Public API barrel + detect() async generator
   run.js            Whole-AOI pipeline (search → concurrent detect → cluster);
-                    shared by the CLI local mode and the Lambda web API
+                    shared by the CLI local mode and the Lambda web API. Takes a
+                    pluggable { detect, source } so the eodata reader drops in.
   detect.js         Pure block detector + tunable thresholds (DEFAULTS / LOOSE)
-  cog.js            COG I/O (openCOG, readWindow, enumerateBlocks, detectImage)
+  cog.js            COG I/O (openCOG, readWindow, enumerateBlocks, detectImage) — geotiff
+  cog-gdal.js       Node-only sibling of cog.js: reads .jp2 from eodata via gdal-async
+                    (/vsis3, JP2OpenJPEG) for the CloudFerro path; same typed arrays
   coverage.js       SCL clear-sky sampling — the n_clear_obs persistence denominator
   cluster.js        Cross-date spatial clustering (pure function, attaches score)
   score.js          Vision-validated cluster quality score + glint geometry
-  stac.js           STAC search (Element84, async generator, sun angles for glint)
-  geo.js            UTM/WGS84 conversions + degree helpers
+  stac.js           STAC search (Element84 'aws' + Copernicus 'cdse' source profiles)
+  geo.js            UTM/WGS84 conversions + degree helpers (+ epsgFromMgrs)
   worker.js         Web Worker wrapper (postMessage interface)
   vendor/
     geotiff.js      Vendored geotiff.js 2.1 (UMD, browser only)
@@ -44,6 +49,9 @@ lambda/
                     saver and its growing duckdb-queryable collection in one
   deploy.sh         One-command deploy to us-west-2 (function + IAM + S3 bucket;
                     HANDLER=lambda/api.handler PUBLIC_URL=1 deploys the web API)
+cloudferro/
+  provision.sh      One-command CloudFerro WAW3-2 box: OIDC auth → app credential →
+                    VM on the eodata network + floating IP + cloud-init (node/gdal/duckdb)
 aoi/                Site catalogues that drive runs (raw source + a DuckDB .sql that
                     fits it to the standard AOI geojson schema; see aoi/README.md)
   lng-terminals.sql / .sh   Global LNG export terminals (GEM) → AOIs → Lambda fan-out
@@ -185,6 +193,38 @@ cache clusters (they'd be stale the moment the date slider moves) or the viewpor
 - **v1 is synchronous read-through.** Concurrent cold-region requests can double-
   compute a tile (last write wins, harmless); graduating to an SQS-decoupled
   compute path is the planned step when concurrent load justifies the extra state.
+
+## CloudFerro (EU-sovereign bulk path)
+
+The same `lib/` core, off US infrastructure: bulk detection on a CloudFerro WAW3-2
+box co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2`
+directly instead of AWS COGs. Three small pieces, the detector untouched:
+
+- **`source: 'cdse'`** (lib/stac.js) repoints search at the Copernicus Data Space
+  STAC (`stac.dataspace.copernicus.eu/v1`). Its items expose per-band `.jp2` on
+  `s3://eodata/…` and omit `proj:epsg`, so EPSG is derived from the MGRS tile
+  (`epsgFromMgrs`). `source: 'aws'` (Element84 COGs) stays the default, unchanged.
+- **`lib/cog-gdal.js`** is the reader: geotiff.js can't read JP2, so on the box
+  `detectImage` uses **gdal-async** (optional dep) for windowed `/vsis3/eodata`
+  reads + JP2OpenJPEG decode, returning the exact typed arrays detect.js expects.
+  `runAOI({ detect, source })` and cf-run drop it in; cog.js + the browser path are
+  untouched. **Harmonisation:** raw eodata JP2 carries the Sentinel-2 N0400
+  `BOA_ADD_OFFSET` (+1000 DN, acq ≥ 2022-01-25) that the Element84 COGs the
+  methodology was tuned on have removed — so the reader subtracts it (spectral
+  bands only, not SCL). Verified byte-for-byte: same scene via JP2 vs COG gives
+  identical detections (3228 = 3228); without it, ~2339 + bloated blobs.
+- **`cf-run.js`** is the local fan-out: lambda/handler.js's per-scene-CSV pattern,
+  but detection runs in a local worker pool on the box (no Lambda). `<out>/<aoi>/
+  <mgrs>_<date>.csv` (handler columns); file presence == scene done → resumable,
+  scale-to-zero between runs. `--source aws` (pre-harmonised COGs, no offset) is
+  for local testing; `--source cdse` (default) is the box.
+- **`cloudferro/provision.sh`** stands the box up. The account is OIDC-federated
+  (Keycloak) with 2FA, so plain keystone password auth fails (HTTP 401) — the
+  script does one password+TOTP grant, then mints an **application credential**
+  (survives 2FA, non-interactive) into `~/.config/openstack/clouds.yaml`, and
+  provisions keypair + security group + a VM on the `eodata` provider network with
+  a floating IP. eodata reads are anonymous in-region (`data.cloudferro.com`,
+  `CLOUDFERRO`/`PUBLIC`), so cf-run needs no secrets. `DESTROY=1` tears it down.
 
 ## Consumers
 

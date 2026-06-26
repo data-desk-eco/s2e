@@ -36,6 +36,9 @@ lib/
 lambda/
   handler.js        Lambda handler: detect | coverage mode, writes per-scene CSV to S3
   deploy.sh         One-command deploy to us-west-2 (function + IAM + S3 bucket)
+aoi/                Areas of interest for bulk runs (point catalogues + drivers)
+  collect-lng.sh    Fan the Lambda out over every global LNG export terminal (GEM)
+  collect.mjs       Generic multi-AOI fan-out (per-ProjectID envelope dedup, LOOSE)
 ```
 
 ## Key Design Decisions

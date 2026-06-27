@@ -3,14 +3,14 @@
 # `eodata` archive (free in-region JP2 reads). One script, one auth path:
 #
 #   ./box.sh up                       provision the box (keypair/secgroup/net/VM/IP)
-#   ./box.sh run <cf-run args>        detached, resumable detection + live progress
+#   ./box.sh run <detect args>        detached, resumable detection + live progress
 #   ./box.sh pull                     rsync the per-scene CSVs down to $LOCAL_DATA
 #   ./box.sh archive                  push a growing per-tile parquet collection to
 #                                     CloudFerro object storage (s3://$BUCKET/flares)
 #   ./box.sh publish                  make that archive a web-map backend: anonymous
 #                                     public-read + CORS, so DuckDB-wasm can read it
 #   ./box.sh down                     scale to zero (delete VM + floating IP)
-#   ./box.sh all <cf-run args>        up → run → archive → pull → down, hands-off
+#   ./box.sh all <detect args>        up → run → archive → pull → down, hands-off
 #   ./box.sh ssh | ip | watch         interactive login / floating IP / re-attach
 #
 # `run`/`pull`/`watch` are ssh-only; `up`/`down`/`archive`/`ip` use the openstack
@@ -33,7 +33,7 @@ cd "$(dirname "$0")"
 : "${EXTNET:=external}"
 : "${EODATANET:=eodata}"
 : "${REPO_DIR:=s2-flares}"      # repo path on the box
-: "${OUT:=out}"                 # box-side output dir (cf-run writes <OUT>/<id>/<scene>.csv)
+: "${OUT:=out}"                 # box-side output dir (s2-flares detect writes <OUT>/<id>/<mgrs>_<date>.csv)
 : "${LOCAL_DATA:=../data/cf}"   # where `pull` lands the CSVs
 : "${BUCKET:=s2-flares-archive}"  # CloudFerro object-storage container for `archive`
 : "${PRESET:=loose}"            # tags the archive partition (detector preset)
@@ -97,7 +97,7 @@ up(){
     openstack floating ip set --port "$port" "$fip" >/dev/null
   fi
   echo "$fip" > .box-ip
-  printf '\n\033[1;32m✓ provisioned\033[0m  →  ./box.sh ssh   (first boot ~3min: node 22 / gdal / duckdb / clone)\n   ssh -i %s eouser@%s\n' "$KEYFILE" "$fip"
+  printf '\n\033[1;32m✓ provisioned\033[0m  →  ./box.sh ssh   (first boot ~5min: rust / gdal / duckdb / build)\n   ssh -i %s eouser@%s\n' "$KEYFILE" "$fip"
 }
 
 ip(){
@@ -112,8 +112,10 @@ ip(){
 # slurp the rest of this script's stdin (which caused a stray syntax error on logout).
 go_ssh(){ exec ssh $SSHOPTS -i "$KEYFILE" "eouser@$(boxip)"; }
 
-# detached + resumable: cf-run skips scenes whose CSV already exists, so a dropped
-# connection or a re-run just continues. an --aoi geojson is uploaded transparently.
+# detached + resumable: `s2-flares detect` skips scenes whose CSV already exists, so
+# a dropped connection or a re-run just continues. an --aoi geojson is uploaded
+# transparently. the native cli is rebuilt first (incremental — fast if unchanged)
+# so a git pull takes effect; --source cdse selects the eodata jp2 reader.
 run(){
   local ip; ip=$(boxip)
   local a=("$@") args=() i
@@ -124,12 +126,14 @@ run(){
       args+=(--aoi _aoi.geojson); ((i++))
     else args+=("${a[i]}"); fi
   done
+  say "Build on $ip (incremental)"
+  sshx "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && cargo build --release -q -p s2-flares-cli"
   say "Detection on $ip (detached, resumable) → $REPO_DIR/$OUT"
-  sshx "cd $REPO_DIR && git pull -q && nohup bash -lc 'node cf-run.js ${args[*]} --out $OUT --preset $PRESET' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  started — streaming progress (Ctrl-C is safe, the run continues)'"
+  sshx "cd $REPO_DIR && nohup bash -lc './target/release/s2-flares detect --source cdse ${args[*]} --out $OUT --preset $PRESET' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  started — streaming progress (Ctrl-C is safe, the run continues)'"
   watch
 }
 
-# stream new cf-run log lines until the run prints its `done:` summary.
+# stream new detect log lines until the run prints its `done:` summary.
 watch(){
   sshx 'log=/tmp/cfrun.log; n=0
     for _ in $(seq 1 2400); do
@@ -219,5 +223,5 @@ case "${1:-}" in
   up) up;; ip) ip;; ssh) go_ssh;; down) down;;
   run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; publish) publish;;
   all) shift; all "$@";;
-  *) echo "usage: $0 {up | run <cf-run args> | watch | pull | archive | publish | down | all <cf-run args> | ssh | ip}" >&2; exit 1;;
+  *) echo "usage: $0 {up | run <detect args> | watch | pull | archive | publish | down | all <detect args> | ssh | ip}" >&2; exit 1;;
 esac

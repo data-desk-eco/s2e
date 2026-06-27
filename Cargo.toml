@@ -1,0 +1,16 @@
+# s2-flares rust workspace. one pure methodology core (`core/`) compiling both to
+# a native gdal-backed cli (`cli/`) and to wasm for browser/lambda (`wasm/`).
+# the frozen methodology lives once in core; the split is i/o only — exactly the
+# detect.js-takes-typed-arrays / io-in-cog.js seam the js lineage already had.
+[workspace]
+members = ["core", "cli", "wasm"]
+resolver = "2"
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = true

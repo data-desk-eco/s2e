@@ -1,0 +1,348 @@
+//! sentinel-2 swir flare detection — block-level core. 1:1 port of lib/detect.js.
+//!
+//! pure computation: typed slices in, detections out. the spectral mask (b12/b11
+//! swir-hot + background contrast + nhi-swir/saturation) is the physics and always
+//! runs; the morphological gates are the tunable part and LOOSE neutralises them.
+//! every threshold is a parameter — `Thresholds::defaults()` reproduces the proven
+//! constants exactly; `Thresholds::loose()` is recall-first bulk collection.
+
+use std::collections::VecDeque;
+use crate::geo::{utm_params, utm_to_wgs84};
+use crate::score::{glint_angle_nadir, glint_score_from_angle};
+
+pub const BLOCK_SIZE: usize = 256;
+pub const BLOCK_OVERLAP: usize = 10;
+
+/// resolved detector thresholds. counts are f64 to mirror js numeric comparison
+/// (LOOSE disables a gate by setting it to a huge value).
+#[derive(Clone, Copy, Debug)]
+pub struct Thresholds {
+    pub b12_min: f64,
+    pub b11_min: f64,
+    pub peak_b12_min: f64,
+    pub contrast_ratio: f64,
+    pub background_floor: f64,
+    pub peakedness_min: f64,
+    pub saturation: f64,
+    pub max_pixels: f64,
+    pub large_pixels: f64,
+    pub large_b12_min: f64,
+    pub warm_fraction: f64,
+    pub warm_max_pixels: f64,
+    pub single_pixel_min: f64,
+    pub max_cloud_local: f64,
+    pub cloud_free_thresh: f64,
+}
+
+impl Thresholds {
+    /// proven defaults — identical to the original s2-flares / openflaring constants.
+    pub const fn defaults() -> Self {
+        Thresholds {
+            b12_min: 0.30, b11_min: 0.20, peak_b12_min: 0.50, contrast_ratio: 3.0,
+            background_floor: 0.15, peakedness_min: 1.15, saturation: 1.0, max_pixels: 80.0,
+            large_pixels: 30.0, large_b12_min: 0.70, warm_fraction: 0.5, warm_max_pixels: 100.0,
+            single_pixel_min: 0.65, max_cloud_local: 0.75, cloud_free_thresh: 0.30,
+        }
+    }
+    /// loose preset: keep the spectral physics, neutralise the morphological gates.
+    pub const fn loose() -> Self {
+        Thresholds {
+            b12_min: 0.25, b11_min: 0.15, peak_b12_min: 0.30, contrast_ratio: 2.0,
+            background_floor: 0.10, peakedness_min: 1.0, saturation: 1.0, max_pixels: 100000.0,
+            large_pixels: 100000.0, large_b12_min: 0.0, warm_fraction: 0.5, warm_max_pixels: 100000.0,
+            single_pixel_min: 0.25, max_cloud_local: 0.95, cloud_free_thresh: 0.30,
+        }
+    }
+}
+
+impl Default for Thresholds {
+    fn default() -> Self { Self::defaults() }
+}
+
+/// geometry + scene context for one block.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(default))]
+pub struct BlockMeta {
+    pub date: String,
+    pub epsg: i32,
+    pub img_min_x: f64,
+    pub img_max_y: f64,
+    pub res_x: f64,
+    pub res_y: f64,
+    pub block_offset_x: usize,
+    pub block_offset_y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub mgrs: String,
+    pub scene: String,
+    pub sun_elevation: Option<f64>,
+    pub sun_azimuth: Option<f64>,
+}
+
+/// one detection — the full discriminating metric set so any downstream gate is
+/// reconstructable. mirrors the js detection object (peak_b11 is main's field name).
+#[derive(Clone, Debug, Default)]
+// serde(default) so JS/duckdb can pass partial detections (clustering only needs a
+// few fields); alias `max_b11` so the archive's column name deserialises too.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(default))]
+pub struct Detection {
+    pub lon: f64,
+    pub lat: f64,
+    pub date: String,
+    pub mgrs: String,
+    pub scene: String,
+    pub max_b12: f64,
+    pub avg_b12: f64,
+    #[cfg_attr(feature = "serde", serde(alias = "max_b11"))]
+    pub peak_b11: Option<f64>,
+    pub b12_b11_ratio: Option<f64>,
+    pub peakedness: f64,
+    pub pixels: u32,
+    pub warm_size: u32,
+    pub saturated: u8,
+    pub sun_elevation: Option<f64>,
+    pub sun_azimuth: Option<f64>,
+    pub glint_angle: Option<f64>,
+    pub glint_score: Option<f64>,
+    /// canonical-block dedup bookkeeping (the i/o layer strips these).
+    pub peak_img_row: i64,
+    pub peak_img_col: i64,
+}
+
+pub fn dn_to_reflectance(dn: f64) -> f64 { (dn - 1000.0) / 10000.0 }
+
+/// one block overlapping the query bbox, in image pixel coordinates.
+#[derive(Clone, Copy, Debug)]
+pub struct Block {
+    pub br: usize,
+    pub bc: usize,
+    pub window: [usize; 4], // [x0, y0, x1, y1]
+}
+
+/// enumerate blocks overlapping a wgs84 bbox. 1:1 port of cog.js enumerateBlocks
+/// — pure geometry (utm projection + BLOCK_SIZE/OVERLAP grid), shared by the i/o
+/// layer. `img_bbox` = [min_x, min_y, max_x, max_y] (utm).
+pub fn enumerate_blocks(
+    img_width: usize, img_height: usize, img_bbox: [f64; 4], res_x: f64, res_y: f64,
+    bbox: [f64; 4], epsg: i32,
+) -> Vec<Block> {
+    let [img_min_x, img_min_y, img_max_x, img_max_y] = img_bbox;
+    let (zone, is_north) = utm_params(epsg);
+    let sw = crate::geo::wgs84_to_utm(bbox[0], bbox[1], zone, is_north);
+    let ne = crate::geo::wgs84_to_utm(bbox[2], bbox[3], zone, is_north);
+
+    let px0 = (((sw.0.max(img_min_x)) - img_min_x) / res_x).floor().max(0.0) as usize;
+    let py0 = ((img_max_y - ne.1.min(img_max_y)) / res_y).floor().max(0.0) as usize;
+    let px1 = (((ne.0.min(img_max_x)) - img_min_x) / res_x).ceil().min(img_width as f64) as usize;
+    let py1 = ((img_max_y - sw.1.max(img_min_y)) / res_y).ceil().min(img_height as f64) as usize;
+    if px1 <= px0 || py1 <= py0 { return Vec::new(); }
+
+    let block_row0 = py0 / BLOCK_SIZE;
+    let block_row1 = py1.div_ceil(BLOCK_SIZE);
+    let block_col0 = px0 / BLOCK_SIZE;
+    let block_col1 = px1.div_ceil(BLOCK_SIZE);
+
+    let mut blocks = Vec::new();
+    for br in block_row0..block_row1 {
+        for bc in block_col0..block_col1 {
+            let x0 = (bc * BLOCK_SIZE).saturating_sub(BLOCK_OVERLAP);
+            let y0 = (br * BLOCK_SIZE).saturating_sub(BLOCK_OVERLAP);
+            let x1 = ((bc + 1) * BLOCK_SIZE + BLOCK_OVERLAP).min(img_width);
+            let y1 = ((br + 1) * BLOCK_SIZE + BLOCK_OVERLAP).min(img_height);
+            blocks.push(Block { br, bc, window: [x0, y0, x1, y1] });
+        }
+    }
+    blocks
+}
+
+/// cloud fraction from raw scl — (skip, cloud_free).
+pub fn screen_clouds(scl: &[u8], max_cloud_local: f64, cloud_free_thresh: f64) -> (bool, bool) {
+    let total = scl.len();
+    if total == 0 { return (false, true); }
+    let cloud = scl.iter().filter(|&&v| v == 3 || v == 8 || v == 9 || v == 10).count();
+    let frac = cloud as f64 / total as f64;
+    if frac > max_cloud_local { (true, false) } else { (false, frac <= cloud_free_thresh) }
+}
+
+/// 4-connected connected components over a boolean mask. seed order = raster scan
+/// (i ascending), neighbour push order up/down/left/right — matches lib/detect.js.
+pub fn label_connected_components(mask: &[u8], width: usize, height: usize) -> (Vec<i32>, i32) {
+    let mut labels = vec![0i32; width * height];
+    let mut next = 1i32;
+    for i in 0..mask.len() {
+        if mask[i] == 0 || labels[i] != 0 { continue; }
+        let mut q = VecDeque::new();
+        q.push_back(i);
+        labels[i] = next;
+        while let Some(idx) = q.pop_front() {
+            let r = idx / width;
+            let c = idx % width;
+            let visit = |n: usize, q: &mut VecDeque<usize>, labels: &mut [i32]| {
+                if mask[n] != 0 && labels[n] == 0 { labels[n] = next; q.push_back(n); }
+            };
+            if r > 0 { visit(idx - width, &mut q, &mut labels); }
+            if r < height - 1 { visit(idx + width, &mut q, &mut labels); }
+            if c > 0 { visit(idx - 1, &mut q, &mut labels); }
+            if c < width - 1 { visit(idx + 1, &mut q, &mut labels); }
+        }
+        next += 1;
+    }
+    (labels, next - 1)
+}
+
+// grow the contiguous region above `warm_thresh` from the peak, capped at cap.
+fn warm_region_size(b12: &[f64], peak_idx: usize, warm_thresh: f64, w: usize, h: usize, cap: usize) -> usize {
+    if b12[peak_idx] <= warm_thresh { return 0; }
+    let mut visited = vec![false; b12.len()];
+    let mut q = VecDeque::new();
+    q.push_back(peak_idx);
+    visited[peak_idx] = true;
+    let mut size = 0usize;
+    while let Some(idx) = q.pop_front() {
+        size += 1;
+        if size > cap { return size; }
+        let r = idx / w;
+        let c = idx % w;
+        let visit = |n: usize, q: &mut VecDeque<usize>, visited: &mut [bool]| {
+            if !visited[n] && b12[n] > warm_thresh { visited[n] = true; q.push_back(n); }
+        };
+        if r > 0 { visit(idx - w, &mut q, &mut visited); }
+        if r < h - 1 { visit(idx + w, &mut q, &mut visited); }
+        if c > 0 { visit(idx - 1, &mut q, &mut visited); }
+        if c < w - 1 { visit(idx + 1, &mut q, &mut visited); }
+    }
+    size
+}
+
+/// run swir flare detection on one block → (detections, cloud_free).
+pub fn detect_block(
+    b12_raw: &[u16],
+    b11_raw: &[u16],
+    b8a_raw: Option<&[u16]>,
+    scl_raw: Option<&[u8]>,
+    meta: &BlockMeta,
+    t: &Thresholds,
+) -> (Vec<Detection>, bool) {
+    let (w, h) = (meta.width, meta.height);
+    if w == 0 || h == 0 { return (Vec::new(), false); }
+
+    let mut block_cloud_free = true;
+    if let Some(scl) = scl_raw {
+        let (skip, cloud_free) = screen_clouds(scl, t.max_cloud_local, t.cloud_free_thresh);
+        if skip { return (Vec::new(), false); }
+        block_cloud_free = cloud_free;
+    }
+
+    let n = w * h;
+    let mut b12 = vec![0f64; n];
+    let mut bg_pixels: Vec<f64> = Vec::new();
+    for i in 0..n {
+        let v = (b12_raw[i] as f64 - 1000.0) / 10000.0;
+        b12[i] = v;
+        if v < t.b12_min { bg_pixels.push(v); }
+    }
+    if bg_pixels.len() < 10 { return (Vec::new(), block_cloud_free); }
+    bg_pixels.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median_bg = bg_pixels[bg_pixels.len() / 2];
+    let contrast_thresh = median_bg.max(t.background_floor) * t.contrast_ratio;
+
+    let mut b11 = vec![0f64; n];
+    let mut mask = vec![0u8; n];
+    let mut any_mask = false;
+    let has_b8a = b8a_raw.is_some();
+    for i in 0..n {
+        let b11v = (b11_raw[i] as f64 - 1000.0) / 10000.0;
+        b11[i] = b11v;
+        let b12v = b12[i];
+        if b12v <= t.b12_min || b11v <= t.b11_min { continue; }
+        if b12v <= contrast_thresh { continue; }
+        if has_b8a {
+            let b8av = (b8a_raw.unwrap()[i] as f64 - 1000.0) / 10000.0;
+            let denom = b11v + b8av;
+            let nhiswnir = if denom > 0.01 { (b11v - b8av) / denom } else { 0.0 };
+            if !(nhiswnir > 0.0 || b11v > t.saturation || b12v > t.saturation) { continue; }
+        } else if b11v <= t.saturation {
+            continue;
+        }
+        mask[i] = 1;
+        any_mask = true;
+    }
+    if !any_mask { return (Vec::new(), block_cloud_free); }
+
+    let (labels, count) = label_connected_components(&mask, w, h);
+    if count == 0 { return (Vec::new(), block_cloud_free); }
+
+    let (x0, y0) = (meta.block_offset_x, meta.block_offset_y);
+    let (x1, y1) = (x0 + w, y0 + h);
+    let utm_min_x = meta.img_min_x + x0 as f64 * meta.res_x;
+    let utm_min_y = meta.img_max_y - y1 as f64 * meta.res_y;
+    let utm_max_x = meta.img_min_x + x1 as f64 * meta.res_x;
+    let utm_max_yw = meta.img_max_y - y0 as f64 * meta.res_y;
+    let (zone, is_north) = utm_params(meta.epsg);
+
+    // glint is scene-level (one sun geometry per pass), so compute once.
+    let (glint_angle, glint_score) = match meta.sun_elevation {
+        Some(e) => {
+            let a = glint_angle_nadir(e);
+            (Some(a), Some(glint_score_from_angle(a)))
+        }
+        None => (None, None),
+    };
+
+    let mut detections = Vec::new();
+    for label_id in 1..=count {
+        let (mut n_pixels, mut peak_b12, mut peak_idx, mut sum_b12) = (0u32, f64::NEG_INFINITY, usize::MAX, 0f64);
+        for i in 0..n {
+            if labels[i] != label_id { continue; }
+            n_pixels += 1;
+            sum_b12 += b12[i];
+            if b12[i] > peak_b12 { peak_b12 = b12[i]; peak_idx = i; }
+        }
+
+        // --- tunable morphological gates (LOOSE neutralises all of these) ---
+        let np = n_pixels as f64;
+        if np > t.max_pixels { continue; }
+        if peak_b12 < t.peak_b12_min { continue; }
+        if np > t.large_pixels && peak_b12 < t.large_b12_min { continue; }
+        let avg_b12 = sum_b12 / np;
+        if n_pixels > 1 && peak_b12 < t.peakedness_min * avg_b12 && avg_b12 < t.saturation { continue; }
+        if n_pixels == 1 && peak_b12 < t.single_pixel_min { continue; }
+
+        let peak_row = peak_idx / w;
+        let peak_col = peak_idx % w;
+        let warm_thresh = peak_b12 * t.warm_fraction;
+        let warm_size = warm_region_size(&b12, peak_idx, warm_thresh, w, h, t.warm_max_pixels as usize);
+        if warm_size as f64 > t.warm_max_pixels { continue; }
+
+        let col_frac = (peak_col as f64 + 0.5) / w as f64;
+        let row_frac = (peak_row as f64 + 0.5) / h as f64;
+        let utm_x = utm_min_x + col_frac * (utm_max_x - utm_min_x);
+        let utm_y = utm_max_yw - row_frac * (utm_max_yw - utm_min_y);
+        let (lon, lat) = utm_to_wgs84(utm_x, utm_y, zone, is_north);
+
+        let peak_b11 = b11[peak_idx];
+        let ratio = if peak_b11 > 1e-6 { peak_b12 / peak_b11 } else { f64::INFINITY };
+
+        detections.push(Detection {
+            lon, lat,
+            date: meta.date.clone(),
+            mgrs: meta.mgrs.clone(),
+            scene: meta.scene.clone(),
+            max_b12: peak_b12,
+            avg_b12,
+            peak_b11: Some(peak_b11),
+            b12_b11_ratio: Some(ratio),
+            peakedness: peak_b12 / avg_b12,
+            pixels: n_pixels,
+            warm_size: warm_size as u32,
+            saturated: if peak_b12 >= t.saturation { 1 } else { 0 },
+            sun_elevation: meta.sun_elevation,
+            sun_azimuth: meta.sun_azimuth,
+            glint_angle,
+            glint_score,
+            peak_img_row: (y0 + peak_row) as i64,
+            peak_img_col: (x0 + peak_col) as i64,
+        });
+    }
+    (detections, block_cloud_free)
+}

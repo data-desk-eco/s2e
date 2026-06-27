@@ -4,3 +4,4 @@ data/
 .env
 package-lock.json
 cloudferro/.box-ip
+/target

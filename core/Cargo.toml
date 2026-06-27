@@ -1,0 +1,18 @@
+[package]
+name = "s2-flares-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "pure sentinel-2 swir flare-detection methodology core (detect, cluster, score, coverage, geo)"
+
+[lib]
+name = "s2_flares_core"
+path = "src/lib.rs"
+
+# pure compute, no i/o. serde is optional (off by default → core stays dependency-
+# free) so the cli/wasm shells can (de)serialize Detection/Cluster across their seams.
+[features]
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }

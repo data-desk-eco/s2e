@@ -1,16 +1,20 @@
 #cloud-config
-# box setup: node 22 + gdal + duckdb, clone s2-flares, and point gdal at the
-# in-region eodata S3 (free JP2 reads from inside WAW3-2). cf-run then needs no
-# secrets — `node cf-run.js --source cdse ...`.
+# box setup: rust toolchain + gdal + duckdb, clone s2-flares, build the native cli.
+# the cli reads the in-region eodata S3 (free JP2 reads from inside WAW3-2) via gdal
+# /vsis3 with per-VM creds from the metadata service — `s2-flares detect --source
+# cdse …` needs no other secrets. duckdb stays for the archive step. (no node: the
+# detector is now the rust core compiled native, not node + geotiff/gdal-async.)
 package_update: true
-packages: [git, gdal-bin, build-essential, ca-certificates, curl, unzip, python3, jq]
+packages: [git, gdal-bin, libgdal-dev, clang, libclang-dev, pkg-config, build-essential, ca-certificates, curl, unzip, python3, jq]
 runcmd:
-  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-  - apt-get install -y nodejs
   # duckdb as eouser, symlinked onto the global PATH (the installer is per-user)
   - su - eouser -c 'curl -fsSL https://install.duckdb.org | bash'
   - ln -sf /home/eouser/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb
-  - su - eouser -c 'git clone https://github.com/data-desk-eco/s2-flares.git s2-flares && cd s2-flares && npm install gdal-async'
+  # rust toolchain (eouser), clone, and build the native cli (gdal-sys uses bindgen,
+  # hence clang/libclang). only the cli package → no wasm32 target needed on the box.
+  - su - eouser -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
+  - su - eouser -c 'git clone https://github.com/data-desk-eco/s2-flares.git s2-flares && cd s2-flares && . $HOME/.cargo/env && cargo build --release -p s2-flares-cli'
+  - ln -sf /home/eouser/s2-flares/target/release/s2-flares /usr/local/bin/s2-flares
   # WAW3-2 eodata access: per-VM S3 keys + endpoint, served by the metadata
   # service. (the old anonymous data.cloudferro.com/CLOUDFERRO:PUBLIC pair is a
   # different network — unreachable here and it rejects those keys.)

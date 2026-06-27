@@ -3,7 +3,7 @@
 //!
 //!   s2-flares detect  (--bbox|--aoi) --out DIR   grow the DETECTION archive: one
 //!       csv per scene under DIR/<id>/<mgrs>_<date>.csv, file presence == done →
-//!       resumable. this is the analytical source of truth (loose, recall-first).
+//!       resumable. this is the analytical source of truth (recall-first defaults).
 //!
 //!   s2-flares cluster (--archive GLOB | --bbox|--aoi) --out FILE   the derived
 //!       cluster VIEW — run core clustering over archived (or freshly detected)
@@ -32,7 +32,7 @@ struct Args {
     start: String,
     end: String,
     max_cloud_cover: f64,
-    preset: String,
+    t: Thresholds,
     source: String,
     concurrency: usize,
     out: Option<String>,
@@ -53,11 +53,12 @@ fn parse_args() -> Args {
         Some("--help") | Some("-h") | None => { println!("{USAGE}"); std::process::exit(0); }
         Some(x) => die(&format!("unknown subcommand '{x}' (expected detect|cluster)")),
     };
-    // detect defaults to loose (recall-first archive); cluster's min_dates defaults to 1
-    // (map-friendly — every scored site surfaces; gate downstream).
+    // thresholds default recall-first (full spectral mask, gates neutralised);
+    // cluster's min_dates defaults to 1 (map-friendly — every scored site surfaces;
+    // gate downstream). per-variable --*-min flags tighten the detector.
     let mut a = Args {
         bbox: None, aoi: None, archive: None, buffer: 0.0, start: String::new(), end: String::new(),
-        max_cloud_cover: 100.0, preset: if mode == Mode::Detect { "loose".into() } else { "loose".into() },
+        max_cloud_cover: 100.0, t: Thresholds::default(),
         source: "aws".into(), concurrency: 4, out: None, min_dates: 1, min_avg_b12: 0.5, score_threshold: 0.0,
         mode,
     };
@@ -74,7 +75,12 @@ fn parse_args() -> Args {
             "--start" => a.start = next(),
             "--end" => a.end = next(),
             "--cloud" => a.max_cloud_cover = next().parse().unwrap(),
-            "--preset" => a.preset = next(),
+            "--b12-min" => a.t.b12_min = next().parse().unwrap(),
+            "--b11-min" => a.t.b11_min = next().parse().unwrap(),
+            "--peak-b12-min" => a.t.peak_b12_min = next().parse().unwrap(),
+            "--contrast-ratio" => a.t.contrast_ratio = next().parse().unwrap(),
+            "--background-floor" => a.t.background_floor = next().parse().unwrap(),
+            "--peakedness-min" => a.t.peakedness_min = next().parse().unwrap(),
             "--source" => a.source = next(),
             "--concurrency" => a.concurrency = next().parse().unwrap(),
             "--out" => a.out = Some(next()),
@@ -90,7 +96,6 @@ fn parse_args() -> Args {
     if a.mode == Mode::Cluster && a.archive.is_none() && a.bbox.is_none() && a.aoi.is_none() {
         die("cluster: provide --archive GLOB, or --bbox/--aoi to detect fresh");
     }
-    if a.preset != "default" && a.preset != "loose" { die("--preset must be 'default' or 'loose'"); }
     if a.start.is_empty() { a.start = days_ago(183); }
     if a.end.is_empty() { a.end = today(); }
     a
@@ -104,11 +109,15 @@ Options:\n\
   --buffer KM            halo around each aoi (default 0)\n\
   --start/--end Y-M-D    date window (default last ~6 months)\n\
   --cloud N              max scene cloud cover % (default 100)\n\
-  --preset default|loose thresholds (default loose: recall-first archive)\n\
   --source aws|cdse      stac/reader profile (aws cog default; cdse eodata jp2)\n\
   --concurrency N        scenes in flight (default 4)\n\
+  detector knobs (recall-first defaults; raise to tighten the archive):\n\
+  --b12-min 0.25  --b11-min 0.15      swir-hot reflectance floors\n\
+  --peak-b12-min 0.30                 brightest-pixel floor\n\
+  --contrast-ratio 2.0  --background-floor 0.10   flare-vs-background contrast\n\
+  --peakedness-min 1.0                spatial peakedness gate\n\
   --archive GLOB         (cluster) detection source: duckdb-readable parquet/csv\n\
-                         glob, e.g. s3://bkt/flares/preset=loose/**/*.parquet\n\
+                         glob, e.g. s3://bkt/detections/**/*.parquet\n\
   --out PATH             detect: DIR. cluster: FILE (.geojson, or .parquet / s3://\n\
                          clusters/… → nested view); omit → geojson to stdout\n\
   --min-dates/--min-avg-b12/--score-threshold   cluster knobs";
@@ -145,10 +154,6 @@ fn load_aois(a: &Args) -> Vec<Aoi> {
     }).collect()
 }
 
-fn thresholds(preset: &str) -> Thresholds {
-    if preset == "loose" { Thresholds::loose() } else { Thresholds::defaults() }
-}
-
 fn fmt(x: f64) -> String {
     if x.is_infinite() { if x < 0.0 { "-Infinity".into() } else { "Infinity".into() } } else { format!("{x}") }
 }
@@ -177,11 +182,11 @@ fn main() {
 
 // grow the detection archive: one csv per scene, presence == done → resumable.
 fn run_detect(a: &Args, pool: &rayon::ThreadPool) {
-    let t = thresholds(&a.preset);
+    let t = a.t;
     let aois = load_aois(a);
     let out = a.out.clone().unwrap_or_else(|| "out".into());
     let harmonize = a.source != "aws"; // aws cogs pre-harmonised; eodata jp2 isn't
-    eprintln!("detect: {} aoi(s) | {} → {} | preset={} | source={} → {out}/", aois.len(), a.start, a.end, a.preset, a.source);
+    eprintln!("detect: {} aoi(s) | {} → {} | b12≥{} b11≥{} | source={} → {out}/", aois.len(), a.start, a.end, t.b12_min, t.b11_min, a.source);
     let (mut scenes, mut detected) = (0usize, 0usize);
     for aoi in &aois {
         let items = match stac::search(aoi.bbox, &a.start, &a.end, a.max_cloud_cover, &a.source) {
@@ -220,10 +225,10 @@ fn run_cluster(a: &Args, pool: &rayon::ThreadPool) {
             (view::read_archive(glob, a.bbox, &a.start, &a.end).unwrap_or_else(|e| die(&e)), None)
         }
         None => {
-            let t = thresholds(&a.preset);
+            let t = a.t;
             let aois = load_aois(a);
             let harmonize = a.source != "aws";
-            eprintln!("cluster: fresh detect over {} aoi(s) | {} → {} | preset={}", aois.len(), a.start, a.end, a.preset);
+            eprintln!("cluster: fresh detect over {} aoi(s) | {} → {}", aois.len(), a.start, a.end);
             let mut dets = Vec::new();
             let mut obs: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
             for aoi in &aois {

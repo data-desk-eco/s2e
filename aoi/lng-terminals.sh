@@ -12,6 +12,6 @@ rm -f aoi/lng-terminals.geojson
 duckdb < aoi/lng-terminals.sql                       # -> aoi/lng-terminals.geojson
 
 exec "${S2:-cargo run --release -q -p s2-flares-cli --}" detect \
-  --aoi aoi/lng-terminals.geojson --preset loose --source "${SOURCE:-aws}" \
+  --aoi aoi/lng-terminals.geojson --source "${SOURCE:-aws}" \
   --start "${START:-2025-01-01}" --end "${END:-2025-12-31}" \
   --out "${OUT:-out/lng}" --concurrency "${S2_CONCURRENCY:-8}"

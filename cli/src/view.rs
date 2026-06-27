@@ -29,7 +29,7 @@ fn opt_f64(s: &str) -> Option<f64> {
 }
 
 /// read detections from the archive (any duckdb-readable glob: local parquet/csv or
-/// s3://…/flares/preset=…/**/*.parquet), optionally clipped to a bbox + date window.
+/// s3://…/detections/**/*.parquet), optionally clipped to a bbox + date window.
 pub fn read_archive(archive: &str, bbox: Option<[f64; 4]>, start: &str, end: &str) -> Result<Vec<Detection>, String> {
     let out = tmp("dets.csv");
     let out_s = out.to_string_lossy();

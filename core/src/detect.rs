@@ -2,9 +2,9 @@
 //!
 //! pure computation: typed slices in, detections out. the spectral mask (b12/b11
 //! swir-hot + background contrast + nhi-swir/saturation) is the physics and always
-//! runs; the morphological gates are the tunable part and LOOSE neutralises them.
-//! every threshold is a parameter — `Thresholds::defaults()` reproduces the proven
-//! constants exactly; `Thresholds::loose()` is recall-first bulk collection.
+//! runs; the morphological size gates are the tunable part. every threshold is a
+//! field of `Thresholds`, not a preset — `Thresholds::default()` is the recall-first
+//! baseline (full mask, size gates neutralised); shells override fields à la carte.
 
 use std::collections::VecDeque;
 use crate::geo::{utm_params, utm_to_wgs84};
@@ -13,9 +13,12 @@ use crate::score::{glint_angle_nadir, glint_score_from_angle};
 pub const BLOCK_SIZE: usize = 256;
 pub const BLOCK_OVERLAP: usize = 10;
 
-/// resolved detector thresholds. counts are f64 to mirror js numeric comparison
-/// (LOOSE disables a gate by setting it to a huge value).
+/// resolved detector thresholds — every gate is a parameter, not a constant.
+/// counts are f64 to mirror js numeric comparison (a gate is neutralised by
+/// setting it huge). the cli/wasm shells override individual fields; everything
+/// unset keeps the recall-first defaults below.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(default))]
 pub struct Thresholds {
     pub b12_min: f64,
     pub b11_min: f64,
@@ -34,18 +37,13 @@ pub struct Thresholds {
     pub cloud_free_thresh: f64,
 }
 
-impl Thresholds {
-    /// proven defaults — identical to the original s2-flares / openflaring constants.
-    pub const fn defaults() -> Self {
-        Thresholds {
-            b12_min: 0.30, b11_min: 0.20, peak_b12_min: 0.50, contrast_ratio: 3.0,
-            background_floor: 0.15, peakedness_min: 1.15, saturation: 1.0, max_pixels: 80.0,
-            large_pixels: 30.0, large_b12_min: 0.70, warm_fraction: 0.5, warm_max_pixels: 100.0,
-            single_pixel_min: 0.65, max_cloud_local: 0.75, cloud_free_thresh: 0.30,
-        }
-    }
-    /// loose preset: keep the spectral physics, neutralise the morphological gates.
-    pub const fn loose() -> Self {
+impl Default for Thresholds {
+    /// recall-first defaults: the full spectral mask runs (b12/b11 swir-hot +
+    /// background contrast + peakedness — the physics that makes this flare
+    /// detection), while the morphological size gates stay neutralised. precision
+    /// is applied downstream at cluster/score time, not here. tighten any field
+    /// via the cli (--b12-min, --contrast-ratio, …) when you want a leaner archive.
+    fn default() -> Self {
         Thresholds {
             b12_min: 0.25, b11_min: 0.15, peak_b12_min: 0.30, contrast_ratio: 2.0,
             background_floor: 0.10, peakedness_min: 1.0, saturation: 1.0, max_pixels: 100000.0,
@@ -53,10 +51,6 @@ impl Thresholds {
             single_pixel_min: 0.25, max_cloud_local: 0.95, cloud_free_thresh: 0.30,
         }
     }
-}
-
-impl Default for Thresholds {
-    fn default() -> Self { Self::defaults() }
 }
 
 /// geometry + scene context for one block.

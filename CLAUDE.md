@@ -8,17 +8,17 @@ collector all live here, once, in Rust.
 
 The frozen methodology must not drift. The pure compute is ported 1:1 from the
 retired JS `lib/`, and the JS unit suites are carried over as `core/` Rust tests —
-that is the parity gate (preserve byte-for-byte: the spectral mask, DEFAULTS/LOOSE
-thresholds, the score formula, the spectral glint discriminator, the cluster `id`
-hash, presence==done resumability, the parquet hive layout).
+that is the parity gate (preserve byte-for-byte: the spectral mask, the score
+formula, the spectral glint discriminator, the cluster `id` hash, presence==done
+resumability, the parquet hive layout).
 
 ## Architecture
 
 ```
 Cargo.toml          workspace (core + cli + wasm)
 core/               PURE compute, no I/O — compiles to wasm and links into the cli.
-  src/detect.rs       block detector + tunable Thresholds (defaults / loose),
-                      screen_clouds, connected components, enumerate_blocks
+  src/detect.rs       block detector + tunable Thresholds (recall-first defaults;
+                      every gate a parameter), screen_clouds, components, blocks
   src/cluster.rs      cross-date spatial clustering (Cluster/DedupedDet) + the
                       spectral glint discriminator + deterministic cluster id hash
   src/score.rs        vision-validated cluster quality score + glint geometry
@@ -48,7 +48,7 @@ This is the central design decision; everything else follows from it.
 
 - **The archive stores DETECTIONS, never clusters.** One row per detection, the
   detector's own field names, hive-partitioned parquet
-  `flares/preset=…/mgrs=…/date=…/data.parquet`, written per scene (presence == done
+  `detections/mgrs=…/date=…/data.parquet`, written per scene (presence == done
   → resumable, idempotent, incremental). It is **AOI-agnostic**: a flare at
   `(lon,lat)` on a date is a fact independent of the viewport that surfaced it, so
   AOI identity is a query-time tag, not a stored column.
@@ -72,10 +72,13 @@ This is the central design decision; everything else follows from it.
 
 - **detect takes typed slices, not images.** I/O is in the shells; detection is pure
   computation — so it runs identically in the native binary and in wasm.
-- **Thresholds are a parameter, not constants.** `Thresholds::defaults()` reproduces
-  the proven legacy constants exactly; `Thresholds::loose()` keeps the spectral mask
-  (the physics) and neutralises the morphological gates for recall-first bulk
-  collection (quality gating happens downstream).
+- **Thresholds are a parameter, not constants — and not presets.** Every gate is a
+  field of `Thresholds`; `Thresholds::default()` is the one sensible baseline:
+  recall-first — the full spectral mask runs, the morphological size gates are
+  neutralised (quality gating happens downstream at cluster/score). The cli exposes
+  each key variable as its own flag (`--b12-min`, `--contrast-ratio`, …) overriding
+  that baseline; wasm takes an optional partial thresholds object. There is no
+  loose/default preset dial — you tune the variables you care about directly.
 - **The spectral mask always runs; the morphological gates are the tunable part.**
   B12/B11 SWIR-hot + background contrast + NHI-SWIR/saturation is what makes this
   flare detection, not bright-pixel detection.
@@ -114,14 +117,16 @@ Two subcommands over one area (`--bbox W,S,E,N`) or many (`--aoi file.geojson`):
   omit `--out` for GeoJSON to stdout. DuckDB does the parquet/S3 read+write; Rust
   does the clustering; a flat-CSV handoff bridges them (no native parquet deps).
 
-`--preset loose|default` selects thresholds. AOIs are a plain geojson
-FeatureCollection; per-dataset schema-fitting lives in a small DuckDB `.sql` in
-`aoi/`, not in the tool.
+Detector thresholds default recall-first; tighten any single variable with its own
+flag (`--b12-min`, `--b11-min`, `--peak-b12-min`, `--contrast-ratio`,
+`--background-floor`, `--peakedness-min`). AOIs are a plain geojson FeatureCollection;
+per-dataset schema-fitting lives in a small DuckDB `.sql` in `aoi/`, not in the tool.
 
 ## WebAssembly (wasm/)
 
 `wasm-bindgen` exposes the core to JS: `detectBlock` (typed arrays + a BlockMeta-
-shaped object → detections), `cluster` (detection objects → scored sites; accepts
+shaped object + an optional partial thresholds object → detections), `cluster`
+(detection objects → scored sites; accepts
 partial objects and the archive's `max_b11` column name via serde), `scoreCluster`.
 I/O stays JS glue; only the compute crosses. Built with `wasm-pack`. The web map
 clusters raw detections from the archive with the SAME code the CLI runs — no second
@@ -148,13 +153,13 @@ co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2` direc
   `CLOUDFERRO_TOTP_SECRET` (single-quote the values). The openrc session token lasts
   hours; the TOTP code is spent once per invocation.
 - **`archive`** grows a per-tile parquet collection on CloudFerro object storage
-  (`s3://$BUCKET/flares/preset=…/mgrs=…/date=…/data.parquet`), one deterministic-key
+  (`s3://$BUCKET/detections/mgrs=…/date=…/data.parquet`), one deterministic-key
   parquet per scene (idempotent PUT), queryable in one `read_parquet('s3://…/**/
   *.parquet', hive_partitioning=true)`. DuckDB runs on the box (in-region) with
   project S3 creds from `openstack ec2 credentials`; the box is disposable, the S3
   archive persists.
 - **`publish`** makes the archive a web-map backend: anonymous public-read on
-  `flares/*` + CORS (via aws-cli — RadosGW S3 ops), so DuckDB-wasm reads the parquet
+  `detections/*` + CORS (via aws-cli — RadosGW S3 ops), so DuckDB-wasm reads the parquet
   directly over HTTP range requests; the hive layout maps viewport tiles+dates
   straight to object URLs (no LIST). Warsaw-only, no CDN — egress ~€0.0064/GB.
 

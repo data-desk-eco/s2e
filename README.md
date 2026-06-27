@@ -23,7 +23,7 @@ Two artifacts, and the key design decision is the relationship between them:
   carrying the full discriminating metric set so any gate is reconstructable
   downstream: `max_b12, avg_b12, peak_b11, b12_b11_ratio, peakedness, pixels,
   warm_size, saturated, sun_elevation, sun_azimuth, glint_angle, glint_score`.
-  Hive-partitioned parquet, `flares/preset=…/mgrs=…/date=…/data.parquet`, written
+  Hive-partitioned parquet, `detections/mgrs=…/date=…/data.parquet`, written
   per scene (presence == done → resumable). AOI-agnostic: a flare at `(lon,lat)` on
   a date is a fact independent of the viewport that surfaced it.
 
@@ -52,20 +52,23 @@ is also attached.
 
 ## CLI
 
-Two subcommands; one frozen methodology. `--preset loose` is recall-first (spectral
-mask only, morphological gates neutralised — filter downstream); `default`
-reproduces the proven thresholds exactly.
+Two subcommands; one frozen methodology. The detector defaults are recall-first —
+the full spectral mask runs, the morphological size gates are neutralised (precision
+is applied downstream at cluster/score time). Tighten any single variable with a
+`--*-min` flag (`--b12-min`, `--b11-min`, `--peak-b12-min`, `--contrast-ratio`,
+`--background-floor`, `--peakedness-min`) when you want a leaner archive.
 
 ```bash
-cargo build --release -p s2-flares-cli           # → target/release/s2-flares
+make                                             # → target/release/s2-flares
 
 # grow the DETECTION archive: one csv per scene, resumable
-s2-flares detect --bbox -104,31.5,-103,32.5 --preset loose --out out/permian
+s2-flares detect --bbox -104,31.5,-103,32.5 --out out/permian
+s2-flares detect --bbox -104,31.5,-103,32.5 --contrast-ratio 3.0 --out out/tight
 s2-flares detect --aoi aoi/lng-terminals.geojson --source cdse --out out/lng
 
 # derive the cluster VIEW (geojson for a journalist, or nested parquet for the web map)
 s2-flares cluster --bbox 51.44,25.84,51.62,25.98 --start 2025-01-01 --end 2025-03-01
-s2-flares cluster --archive 's3://bkt/flares/preset=loose/**/*.parquet' --out clusters.parquet
+s2-flares cluster --archive 's3://bkt/detections/**/*.parquet' --out clusters.parquet
 ```
 
 `--source aws` reads Element84 COGs (`/vsicurl`); `--source cdse` reads Copernicus

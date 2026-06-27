@@ -6,10 +6,6 @@
 use wasm_bindgen::prelude::*;
 use s2_flares_core::{cluster_detections, detect_block, BlockMeta, ClusterOptions, Detection, Thresholds};
 
-fn thresholds(preset: &str) -> Thresholds {
-    if preset == "loose" { Thresholds::loose() } else { Thresholds::defaults() }
-}
-
 #[derive(serde::Serialize)]
 struct DetectResult {
     detections: Vec<Detection>,
@@ -17,14 +13,21 @@ struct DetectResult {
 }
 
 /// run the block detector on typed arrays. b8a/scl are optional (pass null/undefined).
-/// `meta` is a BlockMeta-shaped object; `preset` is "default" | "loose".
+/// `meta` is a BlockMeta-shaped object; `thresholds` is an optional partial
+/// `{ b12_min?, b11_min?, contrast_ratio?, … }` — omitted fields keep the
+/// recall-first defaults (the full spectral mask, morphological gates neutralised).
 #[wasm_bindgen(js_name = detectBlock)]
 pub fn detect_block_js(
     b12: &[u16], b11: &[u16], b8a: Option<Vec<u16>>, scl: Option<Vec<u8>>,
-    meta: JsValue, preset: &str,
+    meta: JsValue, thresholds: JsValue,
 ) -> Result<JsValue, JsValue> {
     let meta: BlockMeta = serde_wasm_bindgen::from_value(meta)?;
-    let (detections, cloud_free) = detect_block(b12, b11, b8a.as_deref(), scl.as_deref(), &meta, &thresholds(preset));
+    let t: Thresholds = if thresholds.is_undefined() || thresholds.is_null() {
+        Thresholds::default()
+    } else {
+        serde_wasm_bindgen::from_value(thresholds)?
+    };
+    let (detections, cloud_free) = detect_block(b12, b11, b8a.as_deref(), scl.as_deref(), &meta, &t);
     Ok(serde_wasm_bindgen::to_value(&DetectResult { detections, cloud_free })?)
 }
 

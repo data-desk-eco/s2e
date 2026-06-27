@@ -36,7 +36,6 @@ cd "$(dirname "$0")"
 : "${OUT:=out}"                 # box-side output dir (s2-flares detect writes <OUT>/<id>/<mgrs>_<date>.csv)
 : "${LOCAL_DATA:=../data/cf}"   # where `pull` lands the CSVs
 : "${BUCKET:=s2-flares-archive}"  # CloudFerro object-storage container for `archive`
-: "${PRESET:=loose}"            # tags the archive partition (detector preset)
 
 SSHOPTS="-o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
 say(){ printf '\033[1;36m→ %s\033[0m\n' "$*"; }
@@ -129,7 +128,7 @@ run(){
   say "Build on $ip (incremental)"
   sshx "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && cargo build --release -q -p s2-flares-cli"
   say "Detection on $ip (detached, resumable) → $REPO_DIR/$OUT"
-  sshx "cd $REPO_DIR && nohup bash -lc './target/release/s2-flares detect --source cdse ${args[*]} --out $OUT --preset $PRESET' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  started — streaming progress (Ctrl-C is safe, the run continues)'"
+  sshx "cd $REPO_DIR && nohup bash -lc './target/release/s2-flares detect --source cdse ${args[*]} --out $OUT' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  started — streaming progress (Ctrl-C is safe, the run continues)'"
   watch
 }
 
@@ -152,7 +151,7 @@ pull(){
 }
 
 # grow a hive-partitioned parquet collection on CloudFerro object storage —
-# s3://$BUCKET/flares/preset=…/mgrs=…/date=…/data.parquet — the same per-tile
+# s3://$BUCKET/detections/mgrs=…/date=…/data.parquet — the same per-tile
 # archive the web api scene-store keeps, queryable in one read_parquet(…,
 # hive_partitioning=true). one deterministic-key parquet per scene (an S3 PUT, so
 # re-archiving replaces rather than duplicates — duckdb can't overwrite partition
@@ -162,9 +161,9 @@ archive(){
   auth
   openstack container show "$BUCKET" >/dev/null 2>&1 || { say "Bucket $BUCKET"; openstack container create "$BUCKET" >/dev/null; }
   local ak sk; read -r ak sk < <(s3creds)
-  say "Archive $OUT → s3://$BUCKET/flares (per-tile parquet, preset=$PRESET)"
+  say "Archive $OUT → s3://$BUCKET/detections (per-tile parquet)"
   local b64; b64=$(printf '%s' "$ARCHIVER" | base64 | tr -d '\n')
-  sshx "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' PRESET='$PRESET' OUT='$REPO_DIR/$OUT' bash"
+  sshx "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' OUT='$REPO_DIR/$OUT' bash"
 }
 
 # runs on the box: one COPY per non-empty scene CSV to its deterministic S3 key,
@@ -180,14 +179,14 @@ SET s3_access_key_id='$AK'; SET s3_secret_access_key='$SK';"
   for f in "$OUT"/*/*.csv; do
     [ -e "$f" ] && [ "$(wc -l <"$f")" -gt 1 ] || continue   # skip header-only (empty) scenes
     b=$(basename "$f" .csv); m=${b%_*}; d=${b#*_}
-    echo "COPY (SELECT * EXCLUDE(mgrs, date) FROM read_csv('$f', union_by_name=true)) TO 's3://$BUCKET/flares/preset=$PRESET/mgrs=$m/date=$d/data.parquet' (FORMAT parquet);"
+    echo "COPY (SELECT * EXCLUDE(mgrs, date) FROM read_csv('$f', union_by_name=true)) TO 's3://$BUCKET/detections/mgrs=$m/date=$d/data.parquet' (FORMAT parquet);"
   done
 } | "$DDB"
-"$DDB" -c "$S3 SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/flares/**/data.parquet', hive_partitioning=true);"
+"$DDB" -c "$S3 SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/detections/**/data.parquet', hive_partitioning=true);"
 EOS
 )
 
-# make the archive a web-map backend: anonymous public-read on flares/* + CORS, so
+# make the archive a web-map backend: anonymous public-read on detections/* + CORS, so
 # a browser (e.g. DuckDB-wasm) can range-read the parquet directly. one-time per
 # bucket; needs aws-cli (RadosGW S3 policy/CORS aren't openstack/swift operations).
 publish(){
@@ -196,10 +195,10 @@ publish(){
   local ak sk; read -r ak sk < <(s3creds)
   local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api --bucket "$BUCKET")
-  say "Publishing s3://$BUCKET/flares for web-map access (public-read + CORS)"
+  say "Publishing s3://$BUCKET/detections for web-map access (public-read + CORS)"
   "${aws_s3[@]}" put-bucket-cors --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadFlares","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/flares/*"]}]}'
-  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/flares/…"
+  "${aws_s3[@]}" put-bucket-policy --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadDetections","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*"]}]}'
+  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/detections/…"
 }
 
 down(){

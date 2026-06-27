@@ -252,7 +252,17 @@ directly instead of AWS COGs. Three small pieces, the detector untouched:
   one `read_parquet('s3://…/**/*.parquet', hive_partitioning=true)`. duckdb runs
   on the box (in-region write) using project S3 creds from `openstack ec2
   credentials`; the box itself is disposable — the S3 archive and the pulled CSVs
-  persist.
+  persist. One deterministic-key parquet per scene (`…/date=…/data.parquet`) — an
+  S3 PUT that replaces, so re-archiving is idempotent (DuckDB can't overwrite
+  partition dirs on a remote fs, so `PARTITION_BY`+uuid would duplicate rows).
+- **`publish` makes the archive a web-map backend.** It sets anonymous public-read
+  on `flares/*` + a CORS policy on the bucket (via aws-cli — RadosGW S3 ops, not
+  openstack), so a browser reads the parquet directly: validated live with
+  DuckDB-wasm doing CORS + HTTP-range `read_parquet('https://s3.WAW3-2.cloudferro.
+  com/$BUCKET/flares/…/data.parquet')`, byte-identical to server-side DuckDB. The
+  per-tile hive layout is ideal for a map — the viewport's MGRS tiles + dates map
+  straight to object URLs (no bucket LIST needed). Endpoint is Warsaw-only with no
+  CDN, so latency suits an EU audience; egress is ~€0.0064/GB.
 
 ## Consumers
 

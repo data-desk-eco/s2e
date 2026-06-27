@@ -7,6 +7,8 @@
 #   ./box.sh pull                     rsync the per-scene CSVs down to $LOCAL_DATA
 #   ./box.sh archive                  push a growing per-tile parquet collection to
 #                                     CloudFerro object storage (s3://$BUCKET/flares)
+#   ./box.sh publish                  make that archive a web-map backend: anonymous
+#                                     public-read + CORS, so DuckDB-wasm can read it
 #   ./box.sh down                     scale to zero (delete VM + floating IP)
 #   ./box.sh all <cf-run args>        up → run → archive → pull → down, hands-off
 #   ./box.sh ssh | ip | watch         interactive login / floating IP / re-attach
@@ -40,6 +42,12 @@ SSHOPTS="-o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHosts
 say(){ printf '\033[1;36m→ %s\033[0m\n' "$*"; }
 boxip(){ cat .box-ip 2>/dev/null || { echo "no box — run ./box.sh up" >&2; exit 1; }; }
 sshx(){ ssh $SSHOPTS -i "$KEYFILE" "eouser@$(boxip)" "$@"; }
+# project S3 (EC2) creds for our own buckets — list, minting one if none. "ak sk".
+s3creds(){
+  local c; c=$(openstack ec2 credentials list -f json | jq -r '.[0]|"\(.Access) \(.Secret)"' 2>/dev/null || true)
+  { [ -z "${c:-}" ] || [ "$c" = "null null" ]; } && { openstack ec2 credentials create >/dev/null; c=$(openstack ec2 credentials list -f json | jq -r '.[0]|"\(.Access) \(.Secret)"'); }
+  echo "$c"
+}
 
 auth(){
   [ -n "${OS_TOKEN:-}" ] && return 0   # reuse the session within one invocation (one TOTP use)
@@ -149,10 +157,7 @@ pull(){
 archive(){
   auth
   openstack container show "$BUCKET" >/dev/null 2>&1 || { say "Bucket $BUCKET"; openstack container create "$BUCKET" >/dev/null; }
-  local creds ak sk
-  creds=$(openstack ec2 credentials list -f json | jq -r '.[0]|"\(.Access) \(.Secret)"' 2>/dev/null || true)
-  { [ -z "${creds:-}" ] || [ "$creds" = "null null" ]; } && { openstack ec2 credentials create >/dev/null; creds=$(openstack ec2 credentials list -f json | jq -r '.[0]|"\(.Access) \(.Secret)"'); }
-  read -r ak sk <<<"$creds"
+  local ak sk; read -r ak sk < <(s3creds)
   say "Archive $OUT → s3://$BUCKET/flares (per-tile parquet, preset=$PRESET)"
   local b64; b64=$(printf '%s' "$ARCHIVER" | base64 | tr -d '\n')
   sshx "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' PRESET='$PRESET' OUT='$REPO_DIR/$OUT' bash"
@@ -178,6 +183,21 @@ SET s3_access_key_id='$AK'; SET s3_secret_access_key='$SK';"
 EOS
 )
 
+# make the archive a web-map backend: anonymous public-read on flares/* + CORS, so
+# a browser (e.g. DuckDB-wasm) can range-read the parquet directly. one-time per
+# bucket; needs aws-cli (RadosGW S3 policy/CORS aren't openstack/swift operations).
+publish(){
+  auth
+  command -v aws >/dev/null || { echo "publish needs aws-cli (brew install awscli)" >&2; exit 1; }
+  local ak sk; read -r ak sk < <(s3creds)
+  local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
+    aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api --bucket "$BUCKET")
+  say "Publishing s3://$BUCKET/flares for web-map access (public-read + CORS)"
+  "${aws_s3[@]}" put-bucket-cors --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
+  "${aws_s3[@]}" put-bucket-policy --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadFlares","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/flares/*"]}]}'
+  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/flares/…"
+}
+
 down(){
   auth
   local port fip=""
@@ -197,7 +217,7 @@ all(){ up; run "$@"; archive; pull; down; }
 
 case "${1:-}" in
   up) up;; ip) ip;; ssh) go_ssh;; down) down;;
-  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;;
+  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; publish) publish;;
   all) shift; all "$@";;
-  *) echo "usage: $0 {up | run <cf-run args> | watch | pull | archive | down | all <cf-run args> | ssh | ip}" >&2; exit 1;;
+  *) echo "usage: $0 {up | run <cf-run args> | watch | pull | archive | publish | down | all <cf-run args> | ssh | ip}" >&2; exit 1;;
 esac

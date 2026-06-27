@@ -61,12 +61,15 @@ ensure_appcred() {
     OS_PROTOCOL=openid OS_IDENTITY_PROVIDER=ident_cloudferro-cloud_provider \
     OS_PROJECT_ID="$OS_PROJECT_ID" OS_PROJECT_DOMAIN_ID="$OS_PROJECT_DOMAIN_ID" \
     OS_REGION_NAME="$OS_REGION_NAME" OS_INTERFACE=public
+  openstack token issue -f value -c id >/dev/null 2>&1 || \
+    { echo "keystone OIDC exchange failed — token unusable. raw keycloak resp: $resp" >&2; exit 1; }
   openstack application credential delete s2-flares-box >/dev/null 2>&1 || true
   local cred; cred="$(openstack application credential create s2-flares-box \
-    --unrestricted -f json)"
+    --unrestricted -f json 2>&1)"
   local id secret
-  id="$(echo "$cred" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
-  secret="$(echo "$cred" | python3 -c 'import sys,json;print(json.load(sys.stdin)["secret"])')"
+  id="$(echo "$cred" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])' 2>/dev/null)"
+  secret="$(echo "$cred" | python3 -c 'import sys,json;print(json.load(sys.stdin)["secret"])' 2>/dev/null)"
+  [ -z "$id" ] && { echo "app credential create failed:" >&2; echo "$cred" >&2; exit 1; }
   mkdir -p "$ENVDIR"
   python3 - "$CLOUDS" "$id" "$secret" "$OS_REGION_NAME" <<'PY'
 import sys, os, yaml

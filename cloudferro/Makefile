@@ -22,7 +22,7 @@ SECGROUP  ?= s2-flares
 NET       ?= s2-flares-net
 EXTNET    ?= external
 EODATANET ?= eodata
-auth       = source ./openrc.sh
+auth       = source ./s2-flares-openrc-2fa.sh
 
 .PHONY: up ip ssh down
 up:

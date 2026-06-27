@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# cloudferro's official 2FA openrc, vendored verbatim. `source` it to get an
-# authenticated openstack session: it prompts for the account password + a TOTP
-# code, does the keycloak ropc grant, exchanges it for a scoped keystone token,
-# and exports OS_TOKEN / OS_AUTH_TYPE=v3token. the token is valid for hours —
-# long enough for a provisioning session. needs `jq`.
+# To use an OpenStack cloud you need to authenticate against the Identity
+# service named keystone, which returns a **Token** and **Service Catalog**.
+# The catalog contains the endpoints for all services the user/tenant has
+# access to - such as Compute, Image Service, Identity, Object Storage, Block
+# Storage, and Networking (code-named nova, glance, keystone, swift,
+# cinder, and neutron).
+#
+# *NOTE*: Using the 3 *Identity API* does not necessarily mean any other
+# OpenStack API is version 3. For example, your cloud provider may implement
+# Image API v1.1, Block Storage API v2, and Compute API v2.0. OS_AUTH_URL is
+# only for the Identity API served through keystone.
+# unset all currently exported openstack-related environment variables
 for var in $(env | sed -n 's/^\(OS.*\)=.*/\1/p'); do unset "$var"; done
 if ! [ -x "$(command -v jq)" ]; then
     echo "jq could not be found in the path. Please install before sourcing rc file"

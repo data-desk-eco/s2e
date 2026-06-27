@@ -50,8 +50,8 @@ lambda/
   deploy.sh         One-command deploy to us-west-2 (function + IAM + S3 bucket;
                     HANDLER=lambda/api.handler PUBLIC_URL=1 deploys the web API)
 cloudferro/
-  openrc.sh         Vendored official CloudFerro 2FA openrc — `source` for an
-                    authenticated openstack session (password+TOTP → keystone token)
+  s2-flares-openrc-2fa.sh  Vendored official CloudFerro 2FA openrc (verbatim) —
+                    `source` for an authenticated openstack session (password+TOTP)
   Makefile          make up/ip/ssh/down: provision the WAW3-2 box (keypair, secgroup,
                     tenant net, VM on the eodata net + floating IP) with plain openstack
   cloud-init.yaml   box bootstrap: node 22 / gdal / duckdb + clone, anonymous eodata env
@@ -221,9 +221,9 @@ directly instead of AWS COGs. Three small pieces, the detector untouched:
   <mgrs>_<date>.csv` (handler columns); file presence == scene done → resumable,
   scale-to-zero between runs. `--source aws` (pre-harmonised COGs, no offset) is
   for local testing; `--source cdse` (default) is the box.
-- **`cloudferro/Makefile` + `openrc.sh`** stand the box up. The account is
-  OIDC-federated (Keycloak) with 2FA, so plain keystone password auth fails —
-  `openrc.sh` is CloudFerro's own 2FA openrc (vendored): `source` it for one
+- **`cloudferro/Makefile` + `s2-flares-openrc-2fa.sh`** stand the box up. The
+  account is OIDC-federated (Keycloak) with 2FA, so plain keystone password auth
+  fails — the openrc is CloudFerro's own 2FA file (vendored): `source` it for one
   password+TOTP prompt and you get an authenticated `openstack` session (keycloak
   ROPC grant → scoped keystone token). The Makefile sources it per target and
   drives provisioning with plain openstack: `make up` (keypair, security group,

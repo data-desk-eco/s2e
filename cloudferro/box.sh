@@ -21,7 +21,7 @@ cd "$(dirname "$0")"
 : "${EXTNET:=external}"
 : "${EODATANET:=eodata}"
 
-say(){ printf '\n\033[1;36m→ %s\033[0m\n' "$*"; }
+say(){ printf '\033[1;36m→ %s\033[0m\n' "$*"; }
 
 auth(){
   [ -f ../.env ] && . ../.env; [ -f .env ] && . .env

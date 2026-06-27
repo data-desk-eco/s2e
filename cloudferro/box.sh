@@ -83,7 +83,9 @@ ip(){
 # accept-new + a throwaway known_hosts means no "authenticity can't be
 # established" prompt and no stale-key error when an IP is reused. LogLevel=ERROR
 # hushes the cosmetic "no post-quantum key exchange" warning; real errors print.
-go_ssh(){ ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -i "$KEYFILE" "eouser@$(cat .box-ip)"; }
+# `exec` hands the process to ssh so the interactive session doesn't slurp the
+# rest of this script's stdin (which caused a stray syntax error on logout).
+go_ssh(){ exec ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -i "$KEYFILE" "eouser@$(cat .box-ip)"; }
 
 down(){
   auth

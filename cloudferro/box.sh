@@ -52,6 +52,7 @@ auth(){
     source ./s2-flares-openrc-2fa.sh
   fi
   set -eu
+  unset IFS   # the openrc leaves IFS=$'\n'; restore default splitting (else `ssh $SSHOPTS` collapses to one arg)
   [ -n "${OS_TOKEN:-}" ] || { echo "auth failed: no keystone token — wrong password/TOTP (check .env), or token-issue rejected" >&2; exit 1; }
 }
 
@@ -139,9 +140,12 @@ pull(){
 }
 
 # grow a hive-partitioned parquet collection on CloudFerro object storage —
-# s3://$BUCKET/flares/preset=…/mgrs=…/date=…/ — the same per-tile archive the web
-# api scene-store keeps, queryable in one read_parquet(…, hive_partitioning=true).
-# duckdb runs on the box (in-region write); project S3 creds come from openstack ec2.
+# s3://$BUCKET/flares/preset=…/mgrs=…/date=…/data.parquet — the same per-tile
+# archive the web api scene-store keeps, queryable in one read_parquet(…,
+# hive_partitioning=true). one deterministic-key parquet per scene (an S3 PUT, so
+# re-archiving replaces rather than duplicates — duckdb can't overwrite partition
+# dirs on a remote fs). duckdb runs on the box (in-region); project S3 creds come
+# from openstack ec2. mgrs/date live in the path, so they're EXCLUDEd from columns.
 archive(){
   auth
   openstack container show "$BUCKET" >/dev/null 2>&1 || { say "Bucket $BUCKET"; openstack container create "$BUCKET" >/dev/null; }
@@ -150,14 +154,29 @@ archive(){
   { [ -z "${creds:-}" ] || [ "$creds" = "null null" ]; } && { openstack ec2 credentials create >/dev/null; creds=$(openstack ec2 credentials list -f json | jq -r '.[0]|"\(.Access) \(.Secret)"'); }
   read -r ak sk <<<"$creds"
   say "Archive $OUT → s3://$BUCKET/flares (per-tile parquet, preset=$PRESET)"
-  sshx "~/.duckdb/cli/latest/duckdb -c \"
-    INSTALL httpfs; LOAD httpfs;
-    SET s3_endpoint='s3.$OS_REGION_NAME.cloudferro.com'; SET s3_region='$OS_REGION_NAME'; SET s3_url_style='path'; SET s3_use_ssl=true;
-    SET s3_access_key_id='$ak'; SET s3_secret_access_key='$sk';
-    COPY (SELECT *, '$PRESET' AS preset FROM read_csv('$REPO_DIR/$OUT/**/*.csv', union_by_name=true))
-      TO 's3://$BUCKET/flares' (FORMAT parquet, PARTITION_BY (preset, mgrs, date), OVERWRITE_OR_IGNORE, FILENAME_PATTERN 'part_{uuid}');
-    SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/flares/**/*.parquet', hive_partitioning=true);\""
+  local b64; b64=$(printf '%s' "$ARCHIVER" | base64 | tr -d '\n')
+  sshx "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' PRESET='$PRESET' OUT='$REPO_DIR/$OUT' bash"
 }
+
+# runs on the box: one COPY per non-empty scene CSV to its deterministic S3 key,
+# then a read-back tally. heredoc'd here so box.sh stays a single file.
+ARCHIVER=$(cat <<'EOS'
+set -euo pipefail
+DDB=~/.duckdb/cli/latest/duckdb
+S3="INSTALL httpfs; LOAD httpfs;
+SET s3_endpoint='s3.$REGION.cloudferro.com'; SET s3_region='$REGION';
+SET s3_url_style='path'; SET s3_use_ssl=true;
+SET s3_access_key_id='$AK'; SET s3_secret_access_key='$SK';"
+{ echo "$S3"
+  for f in "$OUT"/*/*.csv; do
+    [ -e "$f" ] && [ "$(wc -l <"$f")" -gt 1 ] || continue   # skip header-only (empty) scenes
+    b=$(basename "$f" .csv); m=${b%_*}; d=${b#*_}
+    echo "COPY (SELECT * EXCLUDE(mgrs, date) FROM read_csv('$f', union_by_name=true)) TO 's3://$BUCKET/flares/preset=$PRESET/mgrs=$m/date=$d/data.parquet' (FORMAT parquet);"
+  done
+} | "$DDB"
+"$DDB" -c "$S3 SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/flares/**/data.parquet', hive_partitioning=true);"
+EOS
+)
 
 down(){
   auth

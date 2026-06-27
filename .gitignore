@@ -1,7 +1,6 @@
 node_modules/
 lambda/deploy.zip
-data/*.csv
-data/*.parquet
+data/
 .env
 package-lock.json
 cloudferro/.box-ip

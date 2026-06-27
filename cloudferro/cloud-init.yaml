@@ -8,7 +8,7 @@ runcmd:
   - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   - apt-get install -y nodejs
   - curl -fsSL https://install.duckdb.org | bash || true
-  - su - ubuntu -c 'git clone https://github.com/louisgv/s2-flares.git s2-flares && cd s2-flares && npm install gdal-async'
+  - su - eouser -c 'git clone https://github.com/louisgv/s2-flares.git s2-flares && cd s2-flares && npm install gdal-async'
   - |
     cat >/etc/profile.d/eodata.sh <<'ENV'
     export AWS_S3_ENDPOINT=data.cloudferro.com

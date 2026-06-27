@@ -33,30 +33,38 @@ auth = source ./s2-flares-openrc-2fa.sh; [ -n "$$OS_TOKEN" ] || { echo "auth fai
 
 define UP
 $(auth)
-[ -f $(KEYFILE) ] || ssh-keygen -t ed25519 -N '' -f $(KEYFILE)
-openstack keypair show $(KEYPAIR) >/dev/null 2>&1 || openstack keypair create --public-key $(KEYFILE).pub $(KEYPAIR)
+say(){ printf '\n\033[1;36m→ %s\033[0m\n' "$$*"; }
+say "Keypair $(KEYPAIR)"
+[ -f $(KEYFILE) ] || ssh-keygen -t ed25519 -N '' -f $(KEYFILE) >/dev/null
+openstack keypair show $(KEYPAIR) >/dev/null 2>&1 || openstack keypair create --public-key $(KEYFILE).pub $(KEYPAIR) >/dev/null
+say "Security group $(SECGROUP)"
 openstack security group show $(SECGROUP) >/dev/null 2>&1 || {
-  openstack security group create $(SECGROUP)
-  openstack security group rule create --proto tcp --dst-port 22 --remote-ip 0.0.0.0/0 $(SECGROUP); }
+  openstack security group create $(SECGROUP) >/dev/null
+  openstack security group rule create --proto tcp --dst-port 22 --remote-ip 0.0.0.0/0 $(SECGROUP) >/dev/null; }
+say "Network $(NET)"
 openstack network show $(NET) >/dev/null 2>&1 || {
-  openstack network create $(NET)
-  openstack subnet create --network $(NET) --subnet-range 10.0.42.0/24 --dns-nameserver 8.8.8.8 $(NET)-sub
-  openstack router create $(NET)-rtr
-  openstack router set --external-gateway $(EXTNET) $(NET)-rtr
-  openstack router add subnet $(NET)-rtr $(NET)-sub; }
-openstack server show $(VM) >/dev/null 2>&1 || openstack server create $(VM) \
-  --flavor $(FLAVOR) --image "$(IMAGE)" --key-name $(KEYPAIR) --security-group $(SECGROUP) \
-  --nic net-id=$$(openstack network show $(NET) -f value -c id) \
-  --nic net-id=$$(openstack network show $(EODATANET) -f value -c id) \
-  --user-data cloud-init.yaml --wait
+  openstack network create $(NET) >/dev/null
+  openstack subnet create --network $(NET) --subnet-range 10.0.42.0/24 --dns-nameserver 8.8.8.8 $(NET)-sub >/dev/null
+  openstack router create $(NET)-rtr >/dev/null
+  openstack router set --external-gateway $(EXTNET) $(NET)-rtr >/dev/null
+  openstack router add subnet $(NET)-rtr $(NET)-sub >/dev/null; }
+if openstack server show $(VM) >/dev/null 2>&1; then say "VM $(VM) already exists"; else
+  say "Booting VM $(VM) ($(FLAVOR)) — a few minutes…"
+  openstack server create $(VM) \
+    --flavor $(FLAVOR) --image "$(IMAGE)" --key-name $(KEYPAIR) --security-group $(SECGROUP) \
+    --nic net-id=$$(openstack network show $(NET) -f value -c id) \
+    --nic net-id=$$(openstack network show $(EODATANET) -f value -c id) \
+    --user-data cloud-init.yaml --wait >/dev/null
+fi
+say "Floating IP"
 port=$$(openstack port list --server $(VM) --network $(NET) -f value -c id | head -1)
 fip=$$(openstack floating ip list --port $$port -f value -c "Floating IP Address" | head -1)
 if [ -z "$$fip" ]; then
   fip=$$(openstack floating ip create $(EXTNET) -f value -c floating_ip_address)
-  openstack floating ip set --port $$port $$fip
+  openstack floating ip set --port $$port $$fip >/dev/null
 fi
 echo "$$fip" >.box-ip
-echo "provisioned → ssh -i $(KEYFILE) ubuntu@$$fip  (wait ~3min for cloud-init)"
+printf '\n\033[1;32m✓ provisioned\033[0m  →  make ssh   (first boot ~3min: node 22 / gdal / clone)\n   ssh -i %s eouser@%s\n' "$(KEYFILE)" "$$fip"
 endef
 
 define IP
@@ -67,11 +75,14 @@ endef
 
 define DOWN
 $(auth)
+say(){ printf '\n\033[1;36m→ %s\033[0m\n' "$$*"; }
 port=$$(openstack port list --server $(VM) --network $(NET) -f value -c id | head -1 || true)
 fip=$$([ -n "$$port" ] && openstack floating ip list --port $$port -f value -c "Floating IP Address" | head -1 || true)
-openstack server delete $(VM) && echo "deleted $(VM)" || echo "no VM $(VM)"
-[ -n "$$fip" ] && openstack floating ip delete $$fip && echo "released $$fip" || true
+say "Deleting VM $(VM)"
+openstack server delete $(VM) --wait >/dev/null 2>&1 && echo "  deleted" || echo "  no VM $(VM)"
+if [ -n "$$fip" ]; then say "Releasing floating IP $$fip"; openstack floating ip delete $$fip >/dev/null 2>&1 || true; fi
 rm -f .box-ip
+printf '\n\033[1;32m✓ scaled to zero\033[0m\n'
 endef
 
 export UP IP DOWN
@@ -79,4 +90,4 @@ export UP IP DOWN
 up:  ; @bash -ec "$$UP"
 ip:  ; @bash -ec "$$IP"
 down:; @bash -ec "$$DOWN"
-ssh: ; @ssh -i $(KEYFILE) ubuntu@$$(cat .box-ip)
+ssh: ; @ssh -i $(KEYFILE) eouser@$$(cat .box-ip)

@@ -29,10 +29,23 @@ EODATANET ?= eodata
 # source the 2fa openrc, then refuse to continue unless it actually minted a
 # keystone token (else the openstack calls below silently fall back to password
 # auth → a confusing `Password:` prompt and 401).
-auth = source ./s2-flares-openrc-2fa.sh; [ -n "$$OS_TOKEN" ] || { echo "auth failed: no keystone token — wrong password/TOTP, or OIDC token-issue rejected" >&2; exit 1; }
+#
+# non-interactive when a gitignored .env (repo root or here) provides
+# CLOUDFERRO_PASSWORD + CLOUDFERRO_TOTP_SECRET (the base32 authenticator seed):
+# we feed the password and an oathtool-generated code into the openrc's two
+# read prompts. otherwise it prompts interactively, unchanged.
+define AUTH
+for f in ../.env ./.env; do [ -f "$$f" ] && { set -a; . "$$f"; set +a; }; done
+if [ -n "$$CLOUDFERRO_TOTP_SECRET" ] && command -v oathtool >/dev/null 2>&1; then
+  source ./s2-flares-openrc-2fa.sh >/dev/null < <(printf '%s\n%s\n' "$$CLOUDFERRO_PASSWORD" "$$(oathtool -b --totp "$$CLOUDFERRO_TOTP_SECRET")")
+else
+  source ./s2-flares-openrc-2fa.sh
+fi
+[ -n "$$OS_TOKEN" ] || { echo "auth failed: no keystone token — wrong password/TOTP (check .env), or OIDC token-issue rejected" >&2; exit 1; }
+endef
 
 define UP
-$(auth)
+$(AUTH)
 say(){ printf '\n\033[1;36m→ %s\033[0m\n' "$$*"; }
 say "Keypair $(KEYPAIR)"
 [ -f $(KEYFILE) ] || ssh-keygen -t ed25519 -N '' -f $(KEYFILE) >/dev/null
@@ -68,13 +81,13 @@ printf '\n\033[1;32m✓ provisioned\033[0m  →  make ssh   (first boot ~3min: n
 endef
 
 define IP
-$(auth)
+$(AUTH)
 openstack port list --server $(VM) --network $(NET) -f value -c id | head -1 | \
   xargs -I{} openstack floating ip list --port {} -f value -c "Floating IP Address" | head -1 | tee .box-ip
 endef
 
 define DOWN
-$(auth)
+$(AUTH)
 say(){ printf '\n\033[1;36m→ %s\033[0m\n' "$$*"; }
 port=$$(openstack port list --server $(VM) --network $(NET) -f value -c id | head -1 || true)
 fip=$$([ -n "$$port" ] && openstack floating ip list --port $$port -f value -c "Floating IP Address" | head -1 || true)
@@ -90,4 +103,7 @@ export UP IP DOWN
 up:  ; @bash -ec "$$UP"
 ip:  ; @bash -ec "$$IP"
 down:; @bash -ec "$$DOWN"
-ssh: ; @ssh -i $(KEYFILE) eouser@$$(cat .box-ip)
+# LogLevel=ERROR hushes the host-key-added line and the (cosmetic) "not using a
+# post-quantum key exchange" warning — the box's old sshd offers no PQ kex; real
+# errors still print. boot a newer image (IMAGE='Ubuntu 24.04 LTS') for actual PQ.
+ssh: ; @ssh -o LogLevel=ERROR -i $(KEYFILE) eouser@$$(cat .box-ip)

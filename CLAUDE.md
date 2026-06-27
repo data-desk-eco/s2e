@@ -228,7 +228,11 @@ directly instead of AWS COGs. Three small pieces, the detector untouched:
   ROPC grant → scoped keystone token). The Makefile sources it per target and
   drives provisioning with plain openstack: `make up` (keypair, security group,
   tenant net, VM on the `eodata` provider network + floating IP, cloud-init),
-  `make ip`/`ssh`, `make down` to scale to zero. eodata reads are anonymous
+  `make ip`/`ssh` (login user `eouser`), `make down` to scale to zero. Auth is
+  non-interactive when a gitignored `.env` (repo root or `cloudferro/`) sets
+  `CLOUDFERRO_PASSWORD` + `CLOUDFERRO_TOTP_SECRET` (the base32 authenticator
+  seed) — the Makefile feeds the password and an `oathtool`-generated code into
+  the openrc's prompts; otherwise it prompts. eodata reads are anonymous
   in-region (`data.cloudferro.com`, `CLOUDFERRO`/`PUBLIC`), so cf-run needs no
   secrets. (No application credential / clouds.yaml machinery — the openrc session
   token lasts hours, long enough for a provisioning session.)

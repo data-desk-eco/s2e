@@ -1,0 +1,22 @@
+[project]
+name = "slstr-flares"
+version = "0.0.1"
+description = "Sentinel-3 SLSTR night-time flare detection — research/experimentation. Sibling to s2-flares JS library."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "xarray>=2024.1",
+    "netcdf4>=1.6",
+    "pandas>=2.2",
+    "pyproj>=3.6",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ipykernel",
+    "matplotlib",
+]
+
+[tool.uv]
+package = false

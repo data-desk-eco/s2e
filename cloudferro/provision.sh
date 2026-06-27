@@ -55,14 +55,18 @@ ensure_appcred() {
   access="$(echo "$resp" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))')"
   [ -z "$access" ] && { echo "auth failed: $resp" >&2; exit 1; }
 
-  # exchange the keycloak token for a keystone token, then mint an app credential.
+  # federated token -> scoped keystone token, then switch to v3token before
+  # minting: keystone rejects `application credential create` under the raw
+  # v3oidcaccesstoken (returns an error blob with no id). this mirrors the
+  # cloudferro openrc-2fa.sh sequence (token issue -> OS_AUTH_TYPE=v3token).
   export OS_AUTH_URL=https://keystone.cloudferro.com/v3 OS_IDENTITY_API_VERSION=3 \
     OS_AUTH_TYPE=v3oidcaccesstoken OS_ACCESS_TOKEN="$access" \
     OS_PROTOCOL=openid OS_IDENTITY_PROVIDER=ident_cloudferro-cloud_provider \
     OS_PROJECT_ID="$OS_PROJECT_ID" OS_PROJECT_DOMAIN_ID="$OS_PROJECT_DOMAIN_ID" \
     OS_REGION_NAME="$OS_REGION_NAME" OS_INTERFACE=public
-  openstack token issue -f value -c id >/dev/null 2>&1 || \
-    { echo "keystone OIDC exchange failed — token unusable. raw keycloak resp: $resp" >&2; exit 1; }
+  local ktok; ktok="$(openstack token issue -f value -c id 2>&1)" \
+    || { echo "keystone OIDC exchange failed: $ktok" >&2; exit 1; }
+  unset OS_AUTH_TYPE OS_ACCESS_TOKEN; export OS_AUTH_TYPE=v3token OS_TOKEN="$ktok"
   openstack application credential delete s2-flares-box >/dev/null 2>&1 || true
   local cred; cred="$(openstack application credential create s2-flares-box \
     --unrestricted -f json 2>&1)"
@@ -86,7 +90,7 @@ data.setdefault('clouds', {})['cloudferro'] = {
 with open(path, 'w') as f: yaml.safe_dump(data, f)
 print('wrote app-cred cloud `cloudferro` →', path)
 PY
-  unset OS_AUTH_TYPE OS_ACCESS_TOKEN OS_AUTH_URL    # subsequent calls use the cloud
+  unset OS_AUTH_TYPE OS_TOKEN OS_AUTH_URL    # subsequent calls use the app-cred cloud
   echo "✓ application credential minted (survives 2FA, non-interactive from here)"
 }
 

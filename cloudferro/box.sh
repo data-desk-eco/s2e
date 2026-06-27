@@ -25,12 +25,14 @@ say(){ printf '\n\033[1;36m→ %s\033[0m\n' "$*"; }
 
 auth(){
   [ -f ../.env ] && . ../.env; [ -f .env ] && . .env
+  set +eu   # the vendored openrc is written for a lax shell (unset OS_* refs, own `return`s)
   if [ -n "${CLOUDFERRO_TOTP_SECRET:-}" ] && command -v oathtool >/dev/null; then
     source ./s2-flares-openrc-2fa.sh >/dev/null \
       < <(printf '%s\n%s\n' "${CLOUDFERRO_PASSWORD:-}" "$(oathtool -b --totp "$CLOUDFERRO_TOTP_SECRET")")
   else
     source ./s2-flares-openrc-2fa.sh
   fi
+  set -eu
   [ -n "${OS_TOKEN:-}" ] || { echo "auth failed: no keystone token — wrong password/TOTP (check .env), or token-issue rejected" >&2; exit 1; }
 }
 

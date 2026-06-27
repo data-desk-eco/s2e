@@ -33,7 +33,7 @@ cli/                native gdal-backed binary — reproduces the old cli.js + cf
                       nested-array parquet; rust clusters; csv handoff between them
   src/main.rs         arg parse, aoi loading, rayon fan-out, `detect` / `cluster`
 wasm/               wasm-bindgen shim: detectBlock / cluster / scoreCluster → js
-cloudferro/         EU-sovereign bulk pipeline (box.sh + cloud-init.yaml)
+cloud/              EU-sovereign bulk pipeline (box.sh + cloud-init.yaml)
 aoi/                site catalogues that drive runs (raw source + a DuckDB .sql that
                     fits it to the standard AOI geojson schema; see aoi/README.md)
 ```
@@ -132,7 +132,7 @@ clustering implementation to drift.
 The same `core`, off US infrastructure: bulk detection on a CloudFerro WAW3-2 box
 co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2` directly.
 
-- **`cloudferro/box.sh`** is the whole pipeline, one script: `up` (provision) →
+- **`cloud/box.sh`** is the whole pipeline, one script: `up` (provision) →
   `run <detect args>` (detached, resumable; rebuilds the binary then runs
   `s2-flares detect --source cdse …` with live progress) → `archive` (grow the
   per-tile parquet collection) → `pull` (rsync CSVs local) → `down` (scale to zero);

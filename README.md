@@ -80,7 +80,7 @@ only the compute crosses. Build with `wasm-pack build wasm/`.
 
 ## CloudFerro (EU-sovereign bulk path)
 
-`cloudferro/box.sh` is the whole pipeline on a CloudFerro WAW3-2 box co-located with
+`cloud/box.sh` is the whole pipeline on a CloudFerro WAW3-2 box co-located with
 the Copernicus `eodata` archive: `up` (provision) → `run <detect args>` (detached,
 resumable native detection) → `archive` (grow the per-tile parquet collection on
 object storage) → `pull` / `down`; `publish` makes the archive a DuckDB-wasm

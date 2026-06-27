@@ -28,7 +28,7 @@ filter). Widen the SQL's status `IN (...)` list for proposed/cancelled too.
 ```sh
 bash aoi/lng-terminals.sh                 # build AOIs (duckdb) + detect locally (loose)
 # or, for the global run, on the EU-sovereign box:
-cloudferro/box.sh run --aoi aoi/lng-terminals.geojson --start 2025-01-01 --end 2025-12-31
+cloud/box.sh run --aoi aoi/lng-terminals.geojson --start 2025-01-01 --end 2025-12-31
 ```
 
 The run is recall-first (`LOOSE`); each scene's detections land at

@@ -3,7 +3,7 @@
 # export terminal worldwide (Global Energy Monitor GGIT). The DuckDB .sql does all
 # schema-fitting (export-only, train dedup, padded envelopes); the s2-flares cli
 # does the detection. For a global run, ship the geojson to the EU-sovereign box
-# (`cloudferro/box.sh run --aoi aoi/lng-terminals.geojson`); run locally it detects
+# (`cloud/box.sh run --aoi aoi/lng-terminals.geojson`); run locally it detects
 # against the public AWS COGs instead.
 set -euo pipefail
 cd "$(dirname "$0")/.."

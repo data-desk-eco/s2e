@@ -2,7 +2,7 @@
 name = "s2-flares-cli"
 version.workspace = true
 edition.workspace = true
-description = "native gdal-backed s2-flares cli — reproduces cli.js (local) and cf-run.js (cdse bulk)"
+description = "Sentinel-2 SWIR gas-flare detection — quick AOI runs and bulk archiving"
 
 [[bin]]
 name = "s2-flares"

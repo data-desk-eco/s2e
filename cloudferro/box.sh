@@ -79,9 +79,11 @@ ip(){
   openstack floating ip list --port "$port" -f value -c "Floating IP Address" | head -1 | tee .box-ip
 }
 
-# LogLevel=ERROR hushes the host-key line and the cosmetic "no post-quantum key
-# exchange" warning (the box's old sshd offers none); real errors still print.
-go_ssh(){ ssh -o LogLevel=ERROR -i "$KEYFILE" "eouser@$(cat .box-ip)"; }
+# ephemeral box, recycled floating IPs → skip host-key pinning entirely:
+# accept-new + a throwaway known_hosts means no "authenticity can't be
+# established" prompt and no stale-key error when an IP is reused. LogLevel=ERROR
+# hushes the cosmetic "no post-quantum key exchange" warning; real errors print.
+go_ssh(){ ssh -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -i "$KEYFILE" "eouser@$(cat .box-ip)"; }
 
 down(){
   auth

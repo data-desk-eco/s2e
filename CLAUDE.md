@@ -50,11 +50,13 @@ lambda/
   deploy.sh         One-command deploy to us-west-2 (function + IAM + S3 bucket;
                     HANDLER=lambda/api.handler PUBLIC_URL=1 deploys the web API)
 cloudferro/
-  box.sh            Box lifecycle in one script — `./box.sh up|ip|ssh|down`: auth +
-                    keypair, secgroup, tenant net, VM on the eodata net + floating IP, over plain openstack
+  box.sh            End-to-end orchestration in one script — provision, detect,
+                    archive, pull, teardown: `./box.sh up | run <cf-run args> |
+                    pull | archive | down | all <cf-run args> | ssh | ip | watch`
   s2-flares-openrc-2fa.sh  Vendored official CloudFerro 2FA openrc (verbatim) —
                     box.sh sources it for an authenticated openstack session
-  cloud-init.yaml   box bootstrap: node 22 / gdal / duckdb + clone, anonymous eodata env
+  cloud-init.yaml   box bootstrap: node 22 / gdal / duckdb + clone; eodata S3 creds
+                    pulled from the WAW3-2 metadata service (per-VM, not anonymous)
 aoi/                Site catalogues that drive runs (raw source + a DuckDB .sql that
                     fits it to the standard AOI geojson schema; see aoi/README.md)
   lng-terminals.sql / .sh   Global LNG export terminals (GEM) → AOIs → Lambda fan-out
@@ -221,23 +223,36 @@ directly instead of AWS COGs. Three small pieces, the detector untouched:
   <mgrs>_<date>.csv` (handler columns); file presence == scene done → resumable,
   scale-to-zero between runs. `--source aws` (pre-harmonised COGs, no offset) is
   for local testing; `--source cdse` (default) is the box.
-- **`cloudferro/box.sh`** stands the box up. The account is OIDC-federated
-  (Keycloak) with 2FA, so plain keystone password auth fails —
-  `s2-flares-openrc-2fa.sh` is CloudFerro's own 2FA file (vendored verbatim);
-  box.sh sources it to get an authenticated `openstack` session (keycloak ROPC
-  grant → scoped keystone token) and then drives provisioning with plain
-  openstack: `./box.sh up` (keypair, security group, tenant net, VM on the
-  `eodata` provider network + floating IP, cloud-init), `./box.sh ip`/`ssh` (login
-  user `eouser`), `./box.sh down` to scale to zero. Auth is non-interactive when a
-  gitignored `.env` (repo root or `cloudferro/`) sets `CLOUDFERRO_PASSWORD` +
-  `CLOUDFERRO_TOTP_SECRET` (the base32 authenticator seed) — box.sh feeds the
+- **`cloudferro/box.sh`** is the whole pipeline, one script: `up` (provision) →
+  `run <cf-run args>` (detached, resumable detection with live progress) →
+  `archive` (grow the object-storage parquet collection) → `pull` (rsync CSVs
+  local) → `down` (scale to zero); `all` chains them hands-off, and `ssh`/`ip`/
+  `watch` re-attach. `run`/`pull`/`watch` are ssh-only; `up`/`down`/`archive`/`ip`
+  use the openstack API. The account is OIDC-federated (Keycloak) with 2FA, so
+  plain keystone password auth fails — `s2-flares-openrc-2fa.sh` is CloudFerro's
+  own 2FA file (vendored verbatim); box.sh sources it for an authenticated
+  `openstack` session (keycloak ROPC grant → scoped keystone token, reused across
+  steps in one invocation so the TOTP code is spent once). Auth is non-interactive
+  when a gitignored `.env` (repo root or `cloudferro/`) sets `CLOUDFERRO_PASSWORD`
+  + `CLOUDFERRO_TOTP_SECRET` (the base32 authenticator seed) — box.sh feeds the
   password and an `oathtool`-generated code into the openrc's prompts; otherwise
   it prompts. **Single-quote the .env values** (`CLOUDFERRO_PASSWORD='…'`): box.sh
   sources the file, so a `$`/backtick in a double-quoted or bare password would be
-  shell-expanded and mangle the login. eodata reads are anonymous in-region
-  (`data.cloudferro.com`, `CLOUDFERRO`/`PUBLIC`), so cf-run needs no secrets. (No
-  application credential / clouds.yaml machinery — the openrc session token lasts
-  hours, long enough for a provisioning session.)
+  shell-expanded and mangle the login. (No application credential / clouds.yaml
+  machinery — the openrc session token lasts hours, long enough for a session.)
+- **eodata access is per-VM, not anonymous.** On WAW3-2 the box pulls its own S3
+  key/secret + endpoint (`eodata.cloudferro.com`) from the metadata service
+  (`169.254.169.254/openstack/latest/vendor_data2.json`) at boot, into
+  `/etc/profile.d/eodata.sh`; cf-run still needs no secrets of its own. The old
+  anonymous `data.cloudferro.com` + `CLOUDFERRO`/`PUBLIC` pair belongs to a
+  different network — unreachable from this box and it rejects those keys.
+- **`archive` grows a per-tile parquet collection on CloudFerro object storage**
+  (`s3://$BUCKET/flares/preset=…/mgrs=…/date=…/`, default bucket
+  `s2-flares-archive`), the same scheme as the web API scene-store, queryable in
+  one `read_parquet('s3://…/**/*.parquet', hive_partitioning=true)`. duckdb runs
+  on the box (in-region write) using project S3 creds from `openstack ec2
+  credentials`; the box itself is disposable — the S3 archive and the pulled CSVs
+  persist.
 
 ## Consumers
 

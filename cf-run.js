@@ -77,6 +77,7 @@ async function runAOIBulk(aoi, a, T) {
                 mkdirSync(dirname(path), { recursive: true });
                 writeFileSync(path, [COLS.join(','), ...r.detections.map(csvRow)].join('\n') + '\n');
                 done++; detected += r.detections.length;
+                process.stderr.write(`  [${done + skipped}/${items.length}] ${aoi.id} ${item.mgrs}_${item.date}: ${r.detections.length} det\n`);
             } catch (err) {
                 process.stderr.write(`  ${aoi.id} ${item.mgrs}_${item.date} FAIL: ${err.message}\n`);
             }

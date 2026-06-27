@@ -1,19 +1,25 @@
 #cloud-config
 # box setup: node 22 + gdal + duckdb, clone s2-flares, and point gdal at the
-# anonymous in-region eodata S3 (free JP2 reads from inside WAW3-2). cf-run then
-# needs no secrets — `node cf-run.js --source cdse ...`.
+# in-region eodata S3 (free JP2 reads from inside WAW3-2). cf-run then needs no
+# secrets — `node cf-run.js --source cdse ...`.
 package_update: true
-packages: [git, gdal-bin, build-essential, ca-certificates, curl, unzip]
+packages: [git, gdal-bin, build-essential, ca-certificates, curl, unzip, python3, jq]
 runcmd:
   - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   - apt-get install -y nodejs
-  - curl -fsSL https://install.duckdb.org | bash || true
+  # duckdb as eouser, symlinked onto the global PATH (the installer is per-user)
+  - su - eouser -c 'curl -fsSL https://install.duckdb.org | bash'
+  - ln -sf /home/eouser/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb
   - su - eouser -c 'git clone https://github.com/data-desk-eco/s2-flares.git s2-flares && cd s2-flares && npm install gdal-async'
+  # WAW3-2 eodata access: per-VM S3 keys + endpoint, served by the metadata
+  # service. (the old anonymous data.cloudferro.com/CLOUDFERRO:PUBLIC pair is a
+  # different network — unreachable here and it rejects those keys.)
   - |
-    cat >/etc/profile.d/eodata.sh <<'ENV'
-    export AWS_S3_ENDPOINT=data.cloudferro.com
-    export AWS_ACCESS_KEY_ID=CLOUDFERRO
-    export AWS_SECRET_ACCESS_KEY=PUBLIC
-    export AWS_VIRTUAL_HOSTING=FALSE
-    export AWS_HTTPS=YES
-    ENV
+    curl -s http://169.254.169.254/openstack/latest/vendor_data2.json | python3 -c '
+    import sys, json
+    m = json.load(sys.stdin)["nova"]["vmconfig"]["mountpoints"][0]
+    print("export AWS_S3_ENDPOINT=%s" % m["s3_url"])
+    print("export AWS_ACCESS_KEY_ID=%s" % m["s3_access_key"])
+    print("export AWS_SECRET_ACCESS_KEY=%s" % m["s3_secret_key"])
+    print("export AWS_VIRTUAL_HOSTING=FALSE")
+    print("export AWS_HTTPS=YES")' > /etc/profile.d/eodata.sh

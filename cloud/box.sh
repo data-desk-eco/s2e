@@ -9,6 +9,7 @@
 #                                     CloudFerro object storage (s3://$BUCKET/flares)
 #   ./box.sh publish                  make that archive a web-map backend: anonymous
 #                                     public-read + CORS, so DuckDB-wasm can read it
+#   ./box.sh cost                     estimate run cost so far (uptime × flavor €/h)
 #   ./box.sh down                     scale to zero (delete VM + floating IP)
 #   ./box.sh all <detect args>        up → run → archive → pull → down, hands-off
 #   ./box.sh ssh | ip | watch         interactive login / floating IP / re-attach
@@ -36,6 +37,7 @@ cd "$(dirname "$0")"
 : "${OUT:=out}"                 # box-side output dir (s2-flares detect writes <OUT>/<id>/<mgrs>_<date>.csv)
 : "${LOCAL_DATA:=../data/cf}"   # where `pull` lands the CSVs
 : "${BUCKET:=s2-flares-archive}"  # CloudFerro object-storage container for `archive`
+: "${RATE:=0.066}"              # eo1.large pay-per-use €/h (WAW3-2); override per flavor
 
 SSHOPTS="-o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
 say(){ printf '\033[1;36m→ %s\033[0m\n' "$*"; }
@@ -201,8 +203,20 @@ publish(){
   echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/detections/…"
 }
 
+# run cost, instantly: CloudFerro bills the flavor by the hour, so uptime × RATE is
+# a deterministic local estimate — the billing portal aggregates daily, far too
+# coarse/slow to reflect a run in flight. assumes auth; `cost` wraps it with auth.
+costline(){
+  local t; t=$(openstack server show "$VM" -f value -c created 2>/dev/null) || return 1
+  t=${t%Z}; t=${t%.*}; t=$(date -ju -f "%Y-%m-%dT%H:%M:%S" "$t" +%s 2>/dev/null || date -u -d "$t" +%s)
+  local h; h=$(echo "scale=2;($(date -u +%s)-$t)/3600" | bc)
+  printf '\033[1;36m→ %s up %sh × €%s/h ≈ €%s\033[0m\n' "$FLAVOR" "$h" "$RATE" "$(echo "scale=2;$h*$RATE"|bc)"
+}
+cost(){ auth; costline || echo "no VM $VM" >&2; }
+
 down(){
   auth
+  costline || true
   local port fip=""
   port=$(openstack port list --server "$VM" --network "$NET" -f value -c id 2>/dev/null | head -1 || true)
   [ -n "$port" ] && fip=$(openstack floating ip list --port "$port" -f value -c "Floating IP Address" | head -1 || true)
@@ -219,8 +233,8 @@ down(){
 all(){ up; run "$@"; archive; pull; down; }
 
 case "${1:-}" in
-  up) up;; ip) ip;; ssh) go_ssh;; down) down;;
+  up) up;; ip) ip;; ssh) go_ssh;; cost) cost;; down) down;;
   run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; publish) publish;;
   all) shift; all "$@";;
-  *) echo "usage: $0 {up | run <detect args> | watch | pull | archive | publish | down | all <detect args> | ssh | ip}" >&2; exit 1;;
+  *) echo "usage: $0 {up | run <detect args> | watch | pull | archive | publish | cost | down | all <detect args> | ssh | ip}" >&2; exit 1;;
 esac

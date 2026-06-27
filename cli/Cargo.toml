@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 s2-flares-core = { path = "../core", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
 gdal = { version = "0.17", features = ["bindgen"] }
 ureq = { version = "2", features = ["json"] }
 serde_json = "1"

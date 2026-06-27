@@ -17,110 +17,134 @@ mod view;
 
 use std::fs;
 use std::path::Path;
+use clap::{Args as ClapArgs, Parser, Subcommand};
 use rayon::prelude::*;
 use s2_flares_core::{cluster_detections, pad_bbox, ClusterOptions, Detection, Thresholds};
 
-#[derive(PartialEq)]
-enum Mode { Detect, Cluster }
+/// Sentinel-2 SWIR flare detection (native gdal).
+#[derive(Parser)]
+#[command(name = "s2-flares", version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
 
-struct Args {
-    mode: Mode,
+#[derive(Subcommand)]
+enum Cmd {
+    /// Grow the detection archive — one csv per scene (presence == done → resumable).
+    Detect {
+        /// Output dir for the per-scene csv archive.
+        #[arg(long, value_name = "DIR", default_value = "out")]
+        out: String,
+        // Common (with its knobs help-heading) goes last so the heading doesn't leak.
+        #[command(flatten)]
+        c: Common,
+    },
+    /// Derive the cluster view over the archive (--archive) or a fresh detect.
+    Cluster {
+        /// Detection source: a duckdb-readable parquet/csv glob, e.g.
+        /// s3://bkt/detections/**/*.parquet (else --bbox/--aoi to detect fresh).
+        #[arg(long, value_name = "GLOB")]
+        archive: Option<String>,
+        /// Output FILE (.geojson journalist · .parquet/s3://… nested web-map view);
+        /// omit → geojson to stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<String>,
+        /// Min distinct dates per cluster.
+        #[arg(long, default_value_t = 1)]
+        min_dates: usize,
+        /// Min mean B12 per cluster.
+        #[arg(long, default_value_t = 0.5)]
+        min_avg_b12: f64,
+        /// Drop clusters scoring below this.
+        #[arg(long, default_value_t = 0.0)]
+        score_threshold: f64,
+        #[command(flatten)]
+        c: Common,
+    },
+}
+
+/// options shared by both subcommands: the area, the search window, the reader
+/// profile, and the recall-first detector knobs (every spectral gate a flag).
+#[derive(ClapArgs)]
+struct Common {
+    /// Area of interest as West,South,East,North.
+    #[arg(long, value_name = "W,S,E,N", value_parser = parse_bbox, allow_hyphen_values = true)]
     bbox: Option<[f64; 4]>,
+    /// AOI geojson FeatureCollection (one run per feature).
+    #[arg(long, value_name = "FILE")]
     aoi: Option<String>,
-    archive: Option<String>,
+    /// Halo around each aoi, km.
+    #[arg(long, value_name = "KM", default_value_t = 0.0)]
     buffer: f64,
-    start: String,
-    end: String,
-    max_cloud_cover: f64,
-    t: Thresholds,
+    /// Window start (default ~6 months ago).
+    #[arg(long, value_name = "Y-M-D")]
+    start: Option<String>,
+    /// Window end (default today).
+    #[arg(long, value_name = "Y-M-D")]
+    end: Option<String>,
+    /// Max scene cloud cover %.
+    #[arg(long, value_name = "PCT", default_value_t = 100.0)]
+    cloud: f64,
+    /// Reader profile: aws cog (default, no offset) or cdse eodata jp2 (harmonised).
+    #[arg(long, default_value = "aws", value_parser = ["aws", "cdse"])]
     source: String,
+    /// Scenes in flight.
+    #[arg(long, default_value_t = 4)]
     concurrency: usize,
-    out: Option<String>,
-    min_dates: usize,
-    min_avg_b12: f64,
-    score_threshold: f64,
+    #[command(flatten)]
+    knobs: Knobs,
+}
+
+/// recall-first detector floors (the spectral mask always runs; these are the
+/// tunable gates). raise any one to lean the archive — see Thresholds::default.
+#[derive(ClapArgs)]
+#[command(next_help_heading = "Detector knobs (recall-first; raise to tighten)")]
+struct Knobs {
+    /// B12 swir-hot reflectance floor.
+    #[arg(long, default_value_t = 0.25)]
+    b12_min: f64,
+    /// B11 swir-hot reflectance floor.
+    #[arg(long, default_value_t = 0.15)]
+    b11_min: f64,
+    /// Brightest-pixel B12 floor.
+    #[arg(long, default_value_t = 0.30)]
+    peak_b12_min: f64,
+    /// Flare-vs-background contrast ratio.
+    #[arg(long, default_value_t = 2.0)]
+    contrast_ratio: f64,
+    /// Background reflectance floor.
+    #[arg(long, default_value_t = 0.10)]
+    background_floor: f64,
+    /// Spatial peakedness gate.
+    #[arg(long, default_value_t = 1.0)]
+    peakedness_min: f64,
+}
+
+impl Common {
+    fn dates(&self) -> (String, String) {
+        (self.start.clone().unwrap_or_else(|| days_ago(183)), self.end.clone().unwrap_or_else(today))
+    }
+    fn thresholds(&self) -> Thresholds {
+        let k = &self.knobs;
+        Thresholds {
+            b12_min: k.b12_min, b11_min: k.b11_min, peak_b12_min: k.peak_b12_min,
+            contrast_ratio: k.contrast_ratio, background_floor: k.background_floor,
+            peakedness_min: k.peakedness_min, ..Default::default()
+        }
+    }
+    fn harmonize(&self) -> bool { self.source != "aws" } // aws cogs pre-harmonised; eodata jp2 isn't
+}
+
+fn parse_bbox(s: &str) -> Result<[f64; 4], String> {
+    let v: Vec<f64> = s.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()
+        .map_err(|e| format!("not a number: {e}"))?;
+    v.try_into().map_err(|_| "expected W,S,E,N".into())
 }
 
 struct Aoi { id: String, name: String, bbox: [f64; 4] }
 
 fn die(msg: &str) -> ! { eprintln!("{msg}"); std::process::exit(1); }
-
-fn parse_args() -> Args {
-    let argv: Vec<String> = std::env::args().collect();
-    let mode = match argv.get(1).map(String::as_str) {
-        Some("detect") => Mode::Detect,
-        Some("cluster") => Mode::Cluster,
-        Some("--help") | Some("-h") | None => { println!("{USAGE}"); std::process::exit(0); }
-        Some(x) => die(&format!("unknown subcommand '{x}' (expected detect|cluster)")),
-    };
-    // thresholds default recall-first (full spectral mask, gates neutralised);
-    // cluster's min_dates defaults to 1 (map-friendly — every scored site surfaces;
-    // gate downstream). per-variable --*-min flags tighten the detector.
-    let mut a = Args {
-        bbox: None, aoi: None, archive: None, buffer: 0.0, start: String::new(), end: String::new(),
-        max_cloud_cover: 100.0, t: Thresholds::default(),
-        source: "aws".into(), concurrency: 4, out: None, min_dates: 1, min_avg_b12: 0.5, score_threshold: 0.0,
-        mode,
-    };
-    let mut i = 2;
-    while i < argv.len() {
-        let k = argv[i].clone();
-        let mut next = || { i += 1; argv.get(i).cloned().unwrap_or_else(|| die(&format!("missing value for {k}"))) };
-        match k.as_str() {
-            "--bbox" => { let v: Vec<f64> = next().split(',').map(|x| x.parse().unwrap()).collect();
-                if v.len() != 4 { die("--bbox needs W,S,E,N"); } a.bbox = Some([v[0], v[1], v[2], v[3]]); }
-            "--aoi" => a.aoi = Some(next()),
-            "--archive" => a.archive = Some(next()),
-            "--buffer" => a.buffer = next().parse().unwrap(),
-            "--start" => a.start = next(),
-            "--end" => a.end = next(),
-            "--cloud" => a.max_cloud_cover = next().parse().unwrap(),
-            "--b12-min" => a.t.b12_min = next().parse().unwrap(),
-            "--b11-min" => a.t.b11_min = next().parse().unwrap(),
-            "--peak-b12-min" => a.t.peak_b12_min = next().parse().unwrap(),
-            "--contrast-ratio" => a.t.contrast_ratio = next().parse().unwrap(),
-            "--background-floor" => a.t.background_floor = next().parse().unwrap(),
-            "--peakedness-min" => a.t.peakedness_min = next().parse().unwrap(),
-            "--source" => a.source = next(),
-            "--concurrency" => a.concurrency = next().parse().unwrap(),
-            "--out" => a.out = Some(next()),
-            "--min-dates" => a.min_dates = next().parse().unwrap(),
-            "--min-avg-b12" => a.min_avg_b12 = next().parse().unwrap(),
-            "--score-threshold" => a.score_threshold = next().parse().unwrap(),
-            "--help" | "-h" => { println!("{USAGE}"); std::process::exit(0); }
-            _ => die(&format!("unknown argument: {k}")),
-        }
-        i += 1;
-    }
-    if a.mode == Mode::Detect && a.bbox.is_none() && a.aoi.is_none() { die("detect: provide --bbox or --aoi"); }
-    if a.mode == Mode::Cluster && a.archive.is_none() && a.bbox.is_none() && a.aoi.is_none() {
-        die("cluster: provide --archive GLOB, or --bbox/--aoi to detect fresh");
-    }
-    if a.start.is_empty() { a.start = days_ago(183); }
-    if a.end.is_empty() { a.end = today(); }
-    a
-}
-
-const USAGE: &str = "s2-flares — Sentinel-2 SWIR flare detection (native gdal)\n\n\
-Usage:\n\
-  s2-flares detect  (--bbox W,S,E,N | --aoi f.geojson) --out DIR   grow detection archive\n\
-  s2-flares cluster (--archive GLOB | --bbox | --aoi) --out FILE   derive cluster view\n\n\
-Options:\n\
-  --buffer KM            halo around each aoi (default 0)\n\
-  --start/--end Y-M-D    date window (default last ~6 months)\n\
-  --cloud N              max scene cloud cover % (default 100)\n\
-  --source aws|cdse      stac/reader profile (aws cog default; cdse eodata jp2)\n\
-  --concurrency N        scenes in flight (default 4)\n\
-  detector knobs (recall-first defaults; raise to tighten the archive):\n\
-  --b12-min 0.25  --b11-min 0.15      swir-hot reflectance floors\n\
-  --peak-b12-min 0.30                 brightest-pixel floor\n\
-  --contrast-ratio 2.0  --background-floor 0.10   flare-vs-background contrast\n\
-  --peakedness-min 1.0                spatial peakedness gate\n\
-  --archive GLOB         (cluster) detection source: duckdb-readable parquet/csv\n\
-                         glob, e.g. s3://bkt/detections/**/*.parquet\n\
-  --out PATH             detect: DIR. cluster: FILE (.geojson, or .parquet / s3://\n\
-                         clusters/… → nested view); omit → geojson to stdout\n\
-  --min-dates/--min-avg-b12/--score-threshold   cluster knobs";
 
 // --- aoi loading -------------------------------------------------------------
 fn geom_bbox(geom: &serde_json::Value) -> [f64; 4] {
@@ -139,9 +163,9 @@ fn geom_bbox(geom: &serde_json::Value) -> [f64; 4] {
     [w, s, e, n]
 }
 
-fn load_aois(a: &Args) -> Vec<Aoi> {
-    if let Some(b) = a.bbox { return vec![Aoi { id: "aoi".into(), name: String::new(), bbox: b }]; }
-    let text = fs::read_to_string(a.aoi.as_ref().unwrap()).unwrap_or_else(|e| die(&format!("read aoi: {e}")));
+fn load_aois(c: &Common) -> Vec<Aoi> {
+    if let Some(b) = c.bbox { return vec![Aoi { id: "aoi".into(), name: String::new(), bbox: b }]; }
+    let text = fs::read_to_string(c.aoi.as_ref().unwrap()).unwrap_or_else(|e| die(&format!("read aoi: {e}")));
     let gj: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| die(&format!("parse aoi: {e}")));
     let feats = gj["features"].as_array().cloned().unwrap_or_default();
     feats.iter().enumerate().map(|(idx, f)| {
@@ -150,7 +174,7 @@ fn load_aois(a: &Args) -> Vec<Aoi> {
             .or_else(|| p["ProjectID"].as_str().map(String::from))
             .unwrap_or_else(|| idx.to_string());
         let name = p["name"].as_str().or_else(|| p["TerminalName"].as_str()).unwrap_or("").to_string();
-        Aoi { id, name, bbox: pad_bbox(geom_bbox(&f["geometry"]), a.buffer) }
+        Aoi { id, name, bbox: pad_bbox(geom_bbox(&f["geometry"]), c.buffer) }
     }).collect()
 }
 
@@ -171,25 +195,33 @@ fn scene_row(d: &Detection) -> String {
 const SCENE_HEADER: &str = "lon,lat,date,mgrs,scene,max_b12,avg_b12,max_b11,b12_b11_ratio,peakedness,pixels,warm_size,saturated,sun_elevation,sun_azimuth,glint_angle,glint_score";
 
 fn main() {
-    let a = parse_args();
+    let cli = Cli::parse();
     read::configure();
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(a.concurrency.max(1)).build().unwrap();
-    match a.mode {
-        Mode::Detect => run_detect(&a, &pool),
-        Mode::Cluster => run_cluster(&a, &pool),
+    let pool = |n: usize| rayon::ThreadPoolBuilder::new().num_threads(n.max(1)).build().unwrap();
+    match &cli.cmd {
+        Cmd::Detect { c, out } => {
+            if c.bbox.is_none() && c.aoi.is_none() { die("detect: provide --bbox or --aoi"); }
+            run_detect(c, out, &pool(c.concurrency));
+        }
+        Cmd::Cluster { c, archive, out, min_dates, min_avg_b12, score_threshold } => {
+            if archive.is_none() && c.bbox.is_none() && c.aoi.is_none() {
+                die("cluster: provide --archive GLOB, or --bbox/--aoi to detect fresh");
+            }
+            run_cluster(c, archive, out, *min_dates, *min_avg_b12, *score_threshold, &pool(c.concurrency));
+        }
     }
 }
 
 // grow the detection archive: one csv per scene, presence == done → resumable.
-fn run_detect(a: &Args, pool: &rayon::ThreadPool) {
-    let t = a.t;
-    let aois = load_aois(a);
-    let out = a.out.clone().unwrap_or_else(|| "out".into());
-    let harmonize = a.source != "aws"; // aws cogs pre-harmonised; eodata jp2 isn't
-    eprintln!("detect: {} aoi(s) | {} → {} | b12≥{} b11≥{} | source={} → {out}/", aois.len(), a.start, a.end, t.b12_min, t.b11_min, a.source);
+fn run_detect(c: &Common, out: &str, pool: &rayon::ThreadPool) {
+    let t = c.thresholds();
+    let aois = load_aois(c);
+    let (start, end) = c.dates();
+    let harmonize = c.harmonize();
+    eprintln!("detect: {} aoi(s) | {start} → {end} | b12≥{} b11≥{} | source={} → {out}/", aois.len(), t.b12_min, t.b11_min, c.source);
     let (mut scenes, mut detected) = (0usize, 0usize);
     for aoi in &aois {
-        let items = match stac::search(aoi.bbox, &a.start, &a.end, a.max_cloud_cover, &a.source) {
+        let items = match stac::search(aoi.bbox, &start, &end, c.cloud, &c.source) {
             Ok(v) => v, Err(e) => { eprintln!("  {} search FAIL: {e}", aoi.id); continue; }
         };
         scenes += items.len();
@@ -218,21 +250,23 @@ fn run_detect(a: &Args, pool: &rayon::ThreadPool) {
 }
 
 // the derived cluster view — over the archive (--archive) or a fresh detect.
-fn run_cluster(a: &Args, pool: &rayon::ThreadPool) {
-    let (detections, observations) = match &a.archive {
+fn run_cluster(c: &Common, archive: &Option<String>, out: &Option<String>,
+    min_dates: usize, min_avg_b12: f64, score_threshold: f64, pool: &rayon::ThreadPool) {
+    let (start, end) = c.dates();
+    let (detections, observations) = match archive {
         Some(glob) => {
-            eprintln!("cluster: archive {glob} | {} → {}", a.start, a.end);
-            (view::read_archive(glob, a.bbox, &a.start, &a.end).unwrap_or_else(|e| die(&e)), None)
+            eprintln!("cluster: archive {glob} | {start} → {end}");
+            (view::read_archive(glob, c.bbox, &start, &end).unwrap_or_else(|e| die(&e)), None)
         }
         None => {
-            let t = a.t;
-            let aois = load_aois(a);
-            let harmonize = a.source != "aws";
-            eprintln!("cluster: fresh detect over {} aoi(s) | {} → {}", aois.len(), a.start, a.end);
+            let t = c.thresholds();
+            let aois = load_aois(c);
+            let harmonize = c.harmonize();
+            eprintln!("cluster: fresh detect over {} aoi(s) | {start} → {end}", aois.len());
             let mut dets = Vec::new();
             let mut obs: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
             for aoi in &aois {
-                let items = match stac::search(aoi.bbox, &a.start, &a.end, a.max_cloud_cover, &a.source) {
+                let items = match stac::search(aoi.bbox, &start, &end, c.cloud, &c.source) {
                     Ok(v) => v, Err(e) => { eprintln!("  {} search FAIL: {e}", aoi.id); continue; }
                 };
                 let res: Vec<(String, bool, Vec<Detection>)> = pool.install(|| items.par_iter().map(|item|
@@ -247,12 +281,12 @@ fn run_cluster(a: &Args, pool: &rayon::ThreadPool) {
         }
     };
 
-    let opts = ClusterOptions { merge_distance: 135.0, min_dates: a.min_dates, min_avg_b12: a.min_avg_b12,
-        observations, score_threshold: a.score_threshold };
+    let opts = ClusterOptions { merge_distance: 135.0, min_dates, min_avg_b12,
+        observations, score_threshold };
     let clusters = cluster_detections(&detections, &opts);
     eprintln!("{} detections → {} clusters", detections.len(), clusters.len());
 
-    match &a.out {
+    match out {
         Some(path) => match view::write_view(&clusters, path) {
             Ok(()) => eprintln!("view → {path}"),
             Err(e) => die(&format!("write view: {e}")),

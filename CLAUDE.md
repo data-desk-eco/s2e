@@ -1,275 +1,167 @@
 # s2-flares
 
-The canonical Sentinel-2 SWIR flare-detection methodology core — one minimal,
-elegant ES-module package that runs in the browser, Node/Bun/Deno, a Web Worker,
-and AWS Lambda. It supersedes the openflaring lineage: detector, glint geometry,
-the vision-validated quality score, and the bulk Lambda collector all live here.
+The canonical Sentinel-2 SWIR flare-detection methodology core, as a minimal Rust
+workspace: one pure methodology core that compiles both to a fast native CLI and to
+WebAssembly for the browser. It supersedes the openflaring/JS lineage — detector,
+glint geometry, the vision-validated quality score, clustering, and the bulk
+collector all live here, once, in Rust.
 
-Consumers (via git submodule):
-- **burnoff** — client-side P2P detection (browser + Web Worker).
-- **gaslight** — single-flare "Enhance" (browser, relaxed thresholds).
-- **permian-flaring** — large-area bulk collection (Lambda fan-out → S3 → DuckDB);
-  also the research notebook where the score was tuned.
+The frozen methodology must not drift. The pure compute is ported 1:1 from the
+retired JS `lib/`, and the JS unit suites are carried over as `core/` Rust tests —
+that is the parity gate (preserve byte-for-byte: the spectral mask, DEFAULTS/LOOSE
+thresholds, the score formula, the spectral glint discriminator, the cluster `id`
+hash, presence==done resumability, the parquet hive layout).
 
 ## Architecture
 
-Pure ES modules. No build step. Workers use `{ type: 'module' }`. Browser
-consumers have zero npm dependencies (vendored geotiff.js UMD); Node/Bun/Deno and
-Lambda use the npm `geotiff` package. The split is hidden behind
-`lib/vendor/geotiff-esm.js`, which loads the right one per environment.
-
 ```
-cli.js              CLI entry point (Bun): --bbox or --aoi geojson; local or --lambda fan-out
-cf-run.js           EU-sovereign bulk runner (Node): the handler.js fan-out, but
-                    detect runs locally on a CloudFerro box via cog-gdal over eodata
-lib/
-  index.js          Public API barrel + detect() async generator
-  run.js            Whole-AOI pipeline (search → concurrent detect → cluster);
-                    shared by the CLI local mode and the Lambda web API. Takes a
-                    pluggable { detect, source } so the eodata reader drops in.
-  detect.js         Pure block detector + tunable thresholds (DEFAULTS / LOOSE)
-  cog.js            COG I/O (openCOG, readWindow, enumerateBlocks, detectImage) — geotiff
-  cog-gdal.js       Node-only sibling of cog.js: reads .jp2 from eodata via gdal-async
-                    (/vsis3, JP2OpenJPEG) for the CloudFerro path; same typed arrays
-  coverage.js       SCL clear-sky sampling — the n_clear_obs persistence denominator
-  cluster.js        Cross-date spatial clustering (pure function, attaches score)
-  score.js          Vision-validated cluster quality score + glint geometry
-  stac.js           STAC search (Element84 'aws' + Copernicus 'cdse' source profiles)
-  geo.js            UTM/WGS84 conversions + degree helpers (+ epsgFromMgrs)
-  worker.js         Web Worker wrapper (postMessage interface)
-  vendor/
-    geotiff.js      Vendored geotiff.js 2.1 (UMD, browser only)
-    geotiff-esm.js  Environment-aware wrapper (browser: UMD, Node/Bun/Deno: npm)
-lambda/
-  handler.js        Per-scene bulk handler: detect | coverage mode, per-scene CSV to S3
-  api.js            Web API handler: geometry + dates → clustered GeoJSON, over a
-                    streaming Function URL (buffered JSON or live NDJSON), area-capped
-  scene-store.js    Per-scene read-through cache: whole-tile detections as parquet
-                    in S3, keyed (preset, mgrs tile, date); the web API's resource
-                    saver and its growing duckdb-queryable collection in one
-  deploy.sh         One-command deploy to us-west-2 (function + IAM + S3 bucket;
-                    HANDLER=lambda/api.handler PUBLIC_URL=1 deploys the web API)
-cloudferro/
-  box.sh            End-to-end orchestration in one script — provision, detect,
-                    archive, pull, teardown: `./box.sh up | run <cf-run args> |
-                    pull | archive | down | all <cf-run args> | ssh | ip | watch`
-  s2-flares-openrc-2fa.sh  Vendored official CloudFerro 2FA openrc (verbatim) —
-                    box.sh sources it for an authenticated openstack session
-  cloud-init.yaml   box bootstrap: node 22 / gdal / duckdb + clone; eodata S3 creds
-                    pulled from the WAW3-2 metadata service (per-VM, not anonymous)
-aoi/                Site catalogues that drive runs (raw source + a DuckDB .sql that
+Cargo.toml          workspace (core + cli + wasm)
+core/               PURE compute, no I/O — compiles to wasm and links into the cli.
+  src/detect.rs       block detector + tunable Thresholds (defaults / loose),
+                      screen_clouds, connected components, enumerate_blocks
+  src/cluster.rs      cross-date spatial clustering (Cluster/DedupedDet) + the
+                      spectral glint discriminator + deterministic cluster id hash
+  src/score.rs        vision-validated cluster quality score + glint geometry
+  src/coverage.rs     scl clear-sky sampling (the n_clear_obs persistence denominator)
+  src/geo.rs          utm/wgs84, epsg_from_mgrs, bbox helpers
+  src/lib.rs          public surface; serde is a feature (off → core is dep-free)
+cli/                native gdal-backed binary — reproduces the old cli.js + cf-run.js
+  src/read.rs         gdal i/o: /vsis3 eodata JP2 (JP2OpenJPEG, N0400 harmonisation)
+                      AND /vsicurl COG byte-ranges — one reader for both paths
+  src/stac.rs         STAC search (aws element84 / cdse copernicus profiles), ureq
+  src/view.rs         the derived cluster view: duckdb reads the archive / writes the
+                      nested-array parquet; rust clusters; csv handoff between them
+  src/main.rs         arg parse, aoi loading, rayon fan-out, `detect` / `cluster`
+wasm/               wasm-bindgen shim: detectBlock / cluster / scoreCluster → js
+cloudferro/         EU-sovereign bulk pipeline (box.sh + cloud-init.yaml)
+aoi/                site catalogues that drive runs (raw source + a DuckDB .sql that
                     fits it to the standard AOI geojson schema; see aoi/README.md)
-  lng-terminals.sql / .sh   Global LNG export terminals (GEM) → AOIs → Lambda fan-out
 ```
 
-## Key Design Decisions
+The native-vs-wasm seam is the old `detect.js`-takes-typed-arrays / I/O-in-`cog.js`
+boundary: `core/` is the pure "detect.js" half (slices in, detections out); I/O
+lives in the `cli/` (GDAL) and `wasm/` (JS glue) shells.
 
-- **detect.js takes typed arrays, not GeoTIFF images.** I/O is in cog.js;
-  detection is pure computation. This lets burnoff do its own I/O with caching and
-  P2P partitioning.
-- **Thresholds are a parameter, not constants.** `detectBlock(..., T)` and
-  `detectImage(item, bbox, { thresholds })` take a resolved thresholds object;
-  `resolveThresholds(overrides)` merges over `DEFAULTS`. Omitting it reproduces the
-  proven DEFAULTS exactly (so burnoff's 5-arg calls are byte-for-byte unchanged).
-  `LOOSE` keeps the spectral mask (the physics) and neutralises the morphological
-  gates for recall-first bulk collection — quality gating then happens downstream.
+## The data model — detections are the archive, clusters are a derived view
+
+This is the central design decision; everything else follows from it.
+
+- **The archive stores DETECTIONS, never clusters.** One row per detection, the
+  detector's own field names, hive-partitioned parquet
+  `flares/preset=…/mgrs=…/date=…/data.parquet`, written per scene (presence == done
+  → resumable, idempotent, incremental). It is **AOI-agnostic**: a flare at
+  `(lon,lat)` on a date is a fact independent of the viewport that surfaced it, so
+  AOI identity is a query-time tag, not a stored column.
+- **Clusters are a derived VIEW.** Clustering is a pure function of `(detections,
+  viewport, date-range, thresholds)` — it would go stale the moment a date slider
+  moves — so it is run on read, never stored as the archive. Two consumers, one
+  `core::cluster_detections`: the CLI (journalist GeoJSON) and the web map (in wasm,
+  over raw detections it pulls off the archive).
+- **Why not pre-cluster the archive?** Clusters are cross-date aggregates, so they
+  can't be written per-scene/idempotently; they bake in a date window; and they'd
+  duplicate the detection rows. So the archive stays detections; the view is a
+  separate, regenerable artifact (a different bucket prefix, `clusters/…`), computed
+  by a separate `s2-flares cluster` run.
+- **The view's shape.** One row per cluster + a nested `detections: list<struct>`
+  column. A reader column-projects the scalar fields for cheap map pins and only
+  fetches the array for drill-down (a double filter for transfer: clustering drops
+  the LOOSE tail of rows; column projection drops the array bytes). The CLI's
+  journalist GeoJSON and the web-map rollup are the same file shape.
+
+## Key design decisions
+
+- **detect takes typed slices, not images.** I/O is in the shells; detection is pure
+  computation — so it runs identically in the native binary and in wasm.
+- **Thresholds are a parameter, not constants.** `Thresholds::defaults()` reproduces
+  the proven legacy constants exactly; `Thresholds::loose()` keeps the spectral mask
+  (the physics) and neutralises the morphological gates for recall-first bulk
+  collection (quality gating happens downstream).
 - **The spectral mask always runs; the morphological gates are the tunable part.**
   B12/B11 SWIR-hot + background contrast + NHI-SWIR/saturation is what makes this
   flare detection, not bright-pixel detection.
-- **clusterDetections is a pure function** with no global state. Consumers pass an
-  `observations` map for the persistence denominator, or null to skip.
-- **Each cluster has a deterministic `id`** (hash of anchor lat/lon at 4 dp) for
-  stable deep linking and caching.
+- **cluster_detections is a pure function** with no global state; callers pass a
+  cloud-free observation count for the persistence denominator, or `None` to skip.
+- **Each cluster has a deterministic `id`** (base36 hash of anchor lat/lon at 4 dp),
+  byte-for-byte identical to the JS hash, for stable deep-linking and caching.
+- **serde is a `core` feature**, off by default so the pure core stays
+  dependency-free; the cli/wasm shells enable it to (de)serialize across their seams.
 
-## Scoring (lib/score.js)
+## Scoring (core/src/score.rs)
 
 `total_score = 0.50·ratio_score + 0.40·persistence_score·(0.1 + 0.9·ratio_score)
 − 0.40·min_glint_score`, range −0.40 … +0.90. Vision-validated in permian-flaring
 (sql/30_score.sql) on an unbiased aerial study: the B12/B11 ratio is the strongest
 precision signal (smooth ramp 1.1→1.7); peak-B12 brightness is a recall floor, not
 a ranking term, so it is dropped; clear-sky persistence is ratio-weighted; glint is
-the cluster MINIMUM look. permian's three hard gates (far-from-facility,
-on-building, on-road) need ground layers and live in its SQL, not here.
+the cluster MINIMUM look.
 
-`clusterDetections` also attaches a complementary SPECTRAL glint discriminator
-(`median_b12_b11_ratio` / `likely_glint`, `glintMetrics` in cluster.js): a robust
-median-ratio test (< 1.25 ⇒ glint) proven on gaslight clusters and unit-tested.
-The score's geometric `min_glint` (from sun elevation) and this spectral test
-measure glint two different ways — both are kept, neither replaces the other.
+`cluster_detections` also attaches a complementary SPECTRAL glint discriminator
+(`median_b12_b11_ratio` / `likely_glint`): a robust median-ratio test (< 1.25 ⇒
+glint). The score's geometric `min_glint` (from sun elevation) and this spectral
+test measure glint two different ways — both are kept, neither replaces the other.
 
-## CLI
+## CLI (cli/)
 
-The single entrypoint, over one area (`--bbox W,S,E,N`) or many (`--aoi
-file.geojson` — one run per feature, its geometry bounds + `--buffer` km as the
-search box, its `id`/`name` tagging the output). `--preset loose|default` selects
-thresholds. Shares all code with the browser/Lambda paths.
+Two subcommands over one area (`--bbox W,S,E,N`) or many (`--aoi file.geojson`):
 
-- **Local (default):** in-process detection + clustering; CSV out (one row per
-  detection carrying cluster fields), auto-converted to Parquet if `duckdb` is on PATH.
-- **Bulk (`--lambda FN`):** instead of detecting locally, fan each scene out to the
-  deployed Lambda, which writes per-scene CSVs to S3 (`--bucket`/`--prefix`, per-AOI
-  prefix `<prefix>/<id>/`); resumable, scoring happens downstream. This folds the old
-  bespoke collector into the CLI — there is no separate fan-out script.
+- **`detect`** grows the detection archive: search → concurrent gdal detection
+  (rayon) → one CSV per scene under `<out>/<id>/<mgrs>_<date>.csv`, file presence ==
+  scene done → resumable. `--source aws` (Element84 COGs, default, no offset) is for
+  local testing; `--source cdse` (eodata JP2, harmonised) is the box.
+- **`cluster`** derives the view: `core::cluster_detections` over the archive
+  (`--archive <duckdb glob>`) or a fresh `detect`, written by `--out` extension —
+  `.geojson` (journalist) or nested-array parquet / `s3://…/clusters/…` (web map);
+  omit `--out` for GeoJSON to stdout. DuckDB does the parquet/S3 read+write; Rust
+  does the clustering; a flat-CSV handoff bridges them (no native parquet deps).
 
-AOIs are a plain geojson FeatureCollection (features with `id`/`name`). The burden
-of fitting a vendor dataset to that schema (filtering, dedup, geometry) lives in a
-small DuckDB `.sql` kept beside the data in `aoi/`, not in the tool.
+`--preset loose|default` selects thresholds. AOIs are a plain geojson
+FeatureCollection; per-dataset schema-fitting lives in a small DuckDB `.sql` in
+`aoi/`, not in the tool.
 
-## Lambda
+## WebAssembly (wasm/)
 
-The detector core lives in `lib/`; the Lambda is an I/O shell around it,
-co-located with the public `sentinel-2-l2a` COGs in us-west-2 so byte-range reads
-are in-region. One invocation = one scene.
-
-- **Writes results to S3, not the invoke response.** Under LOOSE an interior tile
-  exceeds the 6 MB synchronous-response cap, so the handler writes a per-scene CSV
-  to `s3://$S2_BUCKET/$prefix/<mgrs>_<date>.csv` and returns only `{key, count}`.
-  PutObject is atomic, so object presence == scene done → trivially resumable.
-- **Two modes:** detection (default) and `mode: 'coverage'` (SCL clear-sky
-  sampling at catalogue sites, for the persistence denominator).
-- **Event:** `{ item, bbox, thresholds?, screenOverview?, prefix?, mode?, sites?, chunk? }`.
-- Runtime nodejs22.x, arm64. AWS SDK v3 is runtime-provided (not bundled).
-- Deploy: `bash lambda/deploy.sh` — creates the IAM role, the detections bucket,
-  and the function. All names are env-overridable (`FUNCTION_NAME`, `S3_BUCKET`,
-  `MEMORY`, …) so a consumer can deploy the same code under its own names.
-
-## Web API (lambda/api.js)
-
-A second handler turns the same `lib/` core into an HTTP endpoint: POST/GET a
-geometry (or `bbox`) + date range, get back clustered, scored flare detections as
-GeoJSON. It calls `runAOI` (lib/run.js) — the whole-AOI pipeline the CLI also uses
-— so search → detect → cluster lives in one place, not duplicated per entry point.
-
-- **Front door is a Lambda Function URL, not API Gateway.** One handler, built-in
-  HTTPS + CORS, no 29 s gateway cap. Deployed in `RESPONSE_STREAM` invoke mode so a
-  single handler serves both response shapes:
-  - default — one JSON `FeatureCollection`, written when detection completes.
-  - `?stream=1` (or `Accept: text/event-stream`) — newline-delimited JSON events
-    (`start` / `scene` / final `clusters`) as each scene finishes. Built for an
-    interactive map: live pins + a progress bar while panning. Clustering is
-    cross-date, so the map features arrive only in the terminal `clusters` event.
-- **Hard area cap.** `MAX_AOI_KM2` (default 2500) rejects oversized AOIs with 413
-  *before any COG read* — a public endpoint that bounds the work per request. The
-  natural client is a map viewport, which is small; "zoom in" is the contract.
-  Pair it with `MAX_CONCURRENCY` reserved concurrency as a cost ceiling.
-- **Map-friendly clustering.** Defaults to `minDates=1` so every scored detection
-  surfaces; the client filters by the `total_score` slider. `minScore`/`minDates`
-  are request overrides. Bulk-research gating (`minDates=4`) stays the CLI's job.
-- **Raw mode (`raw=1`).** Streams per-scene NDJSON `scene` events carrying the
-  scene's *raw* detections (+ its `epsg` and B12 COG href) and ends with `done`,
-  instead of server-side clusters. For clients that cluster themselves and want it
-  to stay interactive — burnoff consumes this and keeps its instant client-side
-  cluster/intensity sliders, using the Lambda only as the detection engine.
-- **Request:** `{ geometry | bbox, start?, end?, buffer?, preset?, stream?, raw?, minScore?, minDates? }`
-  (query string for GET, JSON body for POST; body wins). Dates default to the last
-  `DEFAULT_DAYS` (90).
-- Deploy: `FUNCTION_NAME=s2-flares-api HANDLER=lambda/api.handler PUBLIC_URL=1 bash
-  lambda/deploy.sh` — same script, adds the streaming Function URL + public-invoke
-  permission + reserved concurrency, and prints the URL.
-
-## Scene cache (lambda/scene-store.js)
-
-The web API is a read-through cache, not a recompute-every-pan endpoint. The cache
-atom is a whole scene — one `(preset, mgrs tile, date)` — because a flare at
-`(lon,lat)` on a date is a fact independent of the viewport that surfaced it. So
-we cache the **detections** (the expensive COG-read step); clustering stays a cheap
-pure function run on read over whatever viewport + dates a request asks for. Don't
-cache clusters (they'd be stale the moment the date slider moves) or the viewport
-(pan one pixel → new key, ~0 % hit rate).
-
-- **Whole-tile on miss.** `runAOI(store)` detects the entire tile footprint
-  (`item.bbox`), not just the viewport, then filters the result to the bbox before
-  clustering. That is what makes "object present == this tile@date is done" honest
-  and grows a *complete* collection: the first viewport into a cold tile pays the
-  COG reads; every later viewport in it (and the next user) reads for free. The
-  streaming NDJSON path hides first-touch latency — pins land per scene.
-- **Parquet, hive-partitioned.** `<CACHE_PREFIX>/<preset>/tile=<mgrs>/<date>.parquet`
-  — so the whole collection is one `read_parquet('s3://…/**/*.parquet',
-  hive_partitioning=true)` away in DuckDB. Columns are the detector's own field
-  names (a cache read feeds `clusterDetections` directly). Preset namespaces the
-  key — LOOSE and DEFAULT detections must never be served to each other.
-- **Empty scenes are cached too.** Most tile-dates have no flares; a zero-row
-  parquet is still written (presence == done). Cloud-free status — the persistence
-  denominator, needed even with zero detections — rides in S3 object metadata.
-- **Parquet I/O is pure-JS** (`hyparquet` / `hyparquet-writer`, snappy), bundled in
-  the deploy zip; no DuckDB binary in the Lambda. The IAM role gets `s3:GetObject`
-  alongside `PutObject`. Enabled whenever `S2_BUCKET` is set; `CACHE_PREFIX`
-  (default `flares`) keeps it apart from the bulk handler's CSV prefix.
-- **v1 is synchronous read-through.** Concurrent cold-region requests can double-
-  compute a tile (last write wins, harmless); graduating to an SQS-decoupled
-  compute path is the planned step when concurrent load justifies the extra state.
+`wasm-bindgen` exposes the core to JS: `detectBlock` (typed arrays + a BlockMeta-
+shaped object → detections), `cluster` (detection objects → scored sites; accepts
+partial objects and the archive's `max_b11` column name via serde), `scoreCluster`.
+I/O stays JS glue; only the compute crosses. Built with `wasm-pack`. The web map
+clusters raw detections from the archive with the SAME code the CLI runs — no second
+clustering implementation to drift.
 
 ## CloudFerro (EU-sovereign bulk path)
 
-The same `lib/` core, off US infrastructure: bulk detection on a CloudFerro WAW3-2
-box co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2`
-directly instead of AWS COGs. Three small pieces, the detector untouched:
+The same `core`, off US infrastructure: bulk detection on a CloudFerro WAW3-2 box
+co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2` directly.
 
-- **`source: 'cdse'`** (lib/stac.js) repoints search at the Copernicus Data Space
-  STAC (`stac.dataspace.copernicus.eu/v1`). Its items expose per-band `.jp2` on
-  `s3://eodata/…` and omit `proj:epsg`, so EPSG is derived from the MGRS tile
-  (`epsgFromMgrs`). `source: 'aws'` (Element84 COGs) stays the default, unchanged.
-- **`lib/cog-gdal.js`** is the reader: geotiff.js can't read JP2, so on the box
-  `detectImage` uses **gdal-async** (optional dep) for windowed `/vsis3/eodata`
-  reads + JP2OpenJPEG decode, returning the exact typed arrays detect.js expects.
-  `runAOI({ detect, source })` and cf-run drop it in; cog.js + the browser path are
-  untouched. **Harmonisation:** raw eodata JP2 carries the Sentinel-2 N0400
-  `BOA_ADD_OFFSET` (+1000 DN, acq ≥ 2022-01-25) that the Element84 COGs the
-  methodology was tuned on have removed — so the reader subtracts it (spectral
-  bands only, not SCL). Verified byte-for-byte: same scene via JP2 vs COG gives
-  identical detections (3228 = 3228); without it, ~2339 + bloated blobs.
-- **`cf-run.js`** is the local fan-out: lambda/handler.js's per-scene-CSV pattern,
-  but detection runs in a local worker pool on the box (no Lambda). `<out>/<aoi>/
-  <mgrs>_<date>.csv` (handler columns); file presence == scene done → resumable,
-  scale-to-zero between runs. `--source aws` (pre-harmonised COGs, no offset) is
-  for local testing; `--source cdse` (default) is the box.
 - **`cloudferro/box.sh`** is the whole pipeline, one script: `up` (provision) →
-  `run <cf-run args>` (detached, resumable detection with live progress) →
-  `archive` (grow the object-storage parquet collection) → `pull` (rsync CSVs
-  local) → `down` (scale to zero); `all` chains them hands-off, and `ssh`/`ip`/
-  `watch` re-attach. `run`/`pull`/`watch` are ssh-only; `up`/`down`/`archive`/`ip`
-  use the openstack API. The account is OIDC-federated (Keycloak) with 2FA, so
-  plain keystone password auth fails — `s2-flares-openrc-2fa.sh` is CloudFerro's
-  own 2FA file (vendored verbatim); box.sh sources it for an authenticated
-  `openstack` session (keycloak ROPC grant → scoped keystone token, reused across
-  steps in one invocation so the TOTP code is spent once). Auth is non-interactive
-  when a gitignored `.env` (repo root or `cloudferro/`) sets `CLOUDFERRO_PASSWORD`
-  + `CLOUDFERRO_TOTP_SECRET` (the base32 authenticator seed) — box.sh feeds the
-  password and an `oathtool`-generated code into the openrc's prompts; otherwise
-  it prompts. **Single-quote the .env values** (`CLOUDFERRO_PASSWORD='…'`): box.sh
-  sources the file, so a `$`/backtick in a double-quoted or bare password would be
-  shell-expanded and mangle the login. (No application credential / clouds.yaml
-  machinery — the openrc session token lasts hours, long enough for a session.)
-- **eodata access is per-VM, not anonymous.** On WAW3-2 the box pulls its own S3
-  key/secret + endpoint (`eodata.cloudferro.com`) from the metadata service
-  (`169.254.169.254/openstack/latest/vendor_data2.json`) at boot, into
-  `/etc/profile.d/eodata.sh`; cf-run still needs no secrets of its own. The old
-  anonymous `data.cloudferro.com` + `CLOUDFERRO`/`PUBLIC` pair belongs to a
-  different network — unreachable from this box and it rejects those keys.
-- **`archive` grows a per-tile parquet collection on CloudFerro object storage**
-  (`s3://$BUCKET/flares/preset=…/mgrs=…/date=…/`, default bucket
-  `s2-flares-archive`), the same scheme as the web API scene-store, queryable in
-  one `read_parquet('s3://…/**/*.parquet', hive_partitioning=true)`. duckdb runs
-  on the box (in-region write) using project S3 creds from `openstack ec2
-  credentials`; the box itself is disposable — the S3 archive and the pulled CSVs
-  persist. One deterministic-key parquet per scene (`…/date=…/data.parquet`) — an
-  S3 PUT that replaces, so re-archiving is idempotent (DuckDB can't overwrite
-  partition dirs on a remote fs, so `PARTITION_BY`+uuid would duplicate rows).
-- **`publish` makes the archive a web-map backend.** It sets anonymous public-read
-  on `flares/*` + a CORS policy on the bucket (via aws-cli — RadosGW S3 ops, not
-  openstack), so a browser reads the parquet directly: validated live with
-  DuckDB-wasm doing CORS + HTTP-range `read_parquet('https://s3.WAW3-2.cloudferro.
-  com/$BUCKET/flares/…/data.parquet')`, byte-identical to server-side DuckDB. The
-  per-tile hive layout is ideal for a map — the viewport's MGRS tiles + dates map
-  straight to object URLs (no bucket LIST needed). Endpoint is Warsaw-only with no
-  CDN, so latency suits an EU audience; egress is ~€0.0064/GB.
+  `run <detect args>` (detached, resumable; rebuilds the binary then runs
+  `s2-flares detect --source cdse …` with live progress) → `archive` (grow the
+  per-tile parquet collection) → `pull` (rsync CSVs local) → `down` (scale to zero);
+  `all` chains them, `ssh`/`ip`/`watch` re-attach.
+- **`cloud-init.yaml`** installs rust + gdal + clang (gdal-sys bindgen) + duckdb,
+  clones, and `cargo build --release -p s2-flares-cli` at boot (no node).
+- **eodata access is per-VM, not anonymous.** The box pulls its own S3 key/secret +
+  endpoint from the metadata service at boot into `/etc/profile.d/eodata.sh`; the
+  detect binary reads `/vsis3/eodata` via gdal with those env creds.
+- **Auth** is OIDC-federated (Keycloak) + 2FA via the vendored official 2FA openrc
+  (`s2-flares-openrc-2fa.sh`); box.sh sources it for an authenticated openstack
+  session, non-interactive when a gitignored `.env` sets `CLOUDFERRO_PASSWORD` +
+  `CLOUDFERRO_TOTP_SECRET` (single-quote the values). The openrc session token lasts
+  hours; the TOTP code is spent once per invocation.
+- **`archive`** grows a per-tile parquet collection on CloudFerro object storage
+  (`s3://$BUCKET/flares/preset=…/mgrs=…/date=…/data.parquet`), one deterministic-key
+  parquet per scene (idempotent PUT), queryable in one `read_parquet('s3://…/**/
+  *.parquet', hive_partitioning=true)`. DuckDB runs on the box (in-region) with
+  project S3 creds from `openstack ec2 credentials`; the box is disposable, the S3
+  archive persists.
+- **`publish`** makes the archive a web-map backend: anonymous public-read on
+  `flares/*` + CORS (via aws-cli — RadosGW S3 ops), so DuckDB-wasm reads the parquet
+  directly over HTTP range requests; the hive layout maps viewport tiles+dates
+  straight to object URLs (no LIST). Warsaw-only, no CDN — egress ~€0.0064/GB.
 
 ## Consumers
 
-- **burnoff**: lower-level functions (searchSTAC, openCOG, readWindow,
-  enumerateBlocks, detectBlock) for P2P block partitioning and CRDT caching;
-  clusterDetections with terminal naming. Runs DEFAULTS.
-- **gaslight**: the worker.js message interface for single-flare enhancement.
-  Relaxed clustering (minDates=1, minAvgB12=0.5).
-- **permian-flaring**: deploys lambda/ for the bulk fan-out, runs LOOSE, scores in
-  DuckDB (sql/30) using the same methodology as lib/score.js.
+Browser consumers (burnoff, gaslight) and the web map use the `wasm/` build —
+detection and clustering with the same core. The web map reads raw detections off
+the published archive and clusters them in wasm; bulk research runs the CLI on the
+box. permian-flaring scored the methodology in DuckDB (sql/30) using the same model
+as `core/src/score.rs`.

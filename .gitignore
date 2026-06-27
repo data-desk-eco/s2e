@@ -1,7 +1,4 @@
-node_modules/
-lambda/deploy.zip
+/target
 data/
 .env
-package-lock.json
 cloudferro/.box-ip
-/target

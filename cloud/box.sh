@@ -5,10 +5,11 @@
 #   ./box.sh up                       provision the box (keypair/secgroup/net/VM/IP)
 #   ./box.sh run <detect args>        detached, resumable detection + live progress
 #   ./box.sh pull                     rsync the per-scene CSVs down to $LOCAL_DATA
-#   ./box.sh archive                  push a growing per-tile parquet collection to
-#                                     CloudFerro object storage (s3://$BUCKET/flares)
+#   ./box.sh archive                  roll the CSVs up to s3://$BUCKET/{detections,
+#                                     clusters} (per-tile raw parquet + the view)
 #   ./box.sh publish                  make that archive a web-map backend: anonymous
 #                                     public-read + CORS, so DuckDB-wasm can read it
+#   ./box.sh wipe                     empty the archive bucket (confirms; FORCE=1 skips)
 #   ./box.sh cost                     estimate run cost so far (uptime × flavor €/h)
 #   ./box.sh down                     scale to zero (delete VM + floating IP)
 #   ./box.sh all <detect args>        up → run → archive → pull → down, hands-off
@@ -219,6 +220,26 @@ publish(){
   echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters}/…"
 }
 
+# empty the archive bucket (every object; the bucket stays) — e.g. to start fresh
+# after a layout change orphans the old prefixes. IRREVERSIBLE: aws s3 rm doesn't
+# prompt, so we do, requiring the bucket name typed back (FORCE=1 skips, for scripts).
+wipe(){
+  auth
+  command -v aws >/dev/null || { echo "wipe needs aws-cli (brew install awscli)" >&2; exit 1; }
+  local ak sk; read -r ak sk < <(s3creds)
+  local rm=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
+    aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3 rm "s3://$BUCKET/" --recursive)
+  if [ "${FORCE:-}" != 1 ]; then
+    local n; n=$("${rm[@]}" --dryrun | wc -l | tr -d ' ')
+    [ "$n" = 0 ] && { say "s3://$BUCKET already empty"; return 0; }
+    printf '\033[1;31m⚠ wipe %s objects from s3://%s — irreversible.\033[0m type the bucket name to confirm: ' "$n" "$BUCKET"
+    local a; read -r a; [ "$a" = "$BUCKET" ] || { echo "  aborted"; return 1; }
+  fi
+  say "Wiping s3://$BUCKET"
+  "${rm[@]}"
+  echo "  bucket emptied."
+}
+
 # run cost, instantly: CloudFerro bills the flavor by the hour, so uptime × RATE is
 # a deterministic local estimate — the billing portal aggregates daily, far too
 # coarse/slow to reflect a run in flight. assumes auth; `cost` wraps it with auth.
@@ -250,7 +271,7 @@ all(){ up; run "$@"; archive; pull; down; }
 
 case "${1:-}" in
   up) up;; ip) ip;; ssh) go_ssh;; cost) cost;; down) down;;
-  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; publish) publish;;
+  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; publish) publish;; wipe) wipe;;
   all) shift; all "$@";;
-  *) echo "usage: $0 {up | run <detect args> | watch | pull | archive | publish | cost | down | all <detect args> | ssh | ip}" >&2; exit 1;;
+  *) echo "usage: $0 {up | run <detect args> | watch | pull | archive | publish | wipe | cost | down | all <detect args> | ssh | ip}" >&2; exit 1;;
 esac

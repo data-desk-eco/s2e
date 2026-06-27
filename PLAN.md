@@ -1,29 +1,55 @@
-# plan: port the bulk detector to cloudferro (eu-sovereign)
+# plan: rust core → native CLI + WASM, CloudFerro pipeline alongside
 
-goal: run s2-flares bulk detection on a CloudFerro **WAW3-2** (warsaw) VM
-co-located with the Copernicus `eodata` archive — off US infrastructure (see
-memory `project_eu_sovereign_cloudferro`). you have an OpenStack `clouds.yaml`
-(use it via `export OS_CLOUD=<name>` + the `openstack` CLI / python-openstackclient)
-and ~$20 (≈€18) of credit — plenty: a full 16,592-scene run costs ~€0.14, so the
-budget covers dev plus ~100 validation runs. use WAW3-2 **spot** for any burst and
-**scale to zero** between runs; watch object-storage growth if you cache anything.
+turn s2-flares into a minimal Rust workspace: one pure methodology core that
+compiles both to a fast native CLI and to WASM for the browser/Lambda consumers,
+killing the JS/JS-bulk implementation split (and the parity-drift it forces). the
+existing `detect.js`-takes-typed-arrays / I/O-in-`cog.js` boundary is exactly the
+native-vs-WASM seam — port along it.
 
-steps:
-1. **provision** — `openstack` → keypair + a small `eo1.medium` (2/4) or `eo1.large`
-   (4/8) VM in WAW3-2 with **EODATA access enabled** + a floating IP; ssh in;
-   install node 22, gdal, duckdb.
-2. **data** — generate `eodata` S3 keys; confirm **free in-region** windowed reads
-   of `s3://eodata/Sentinel-2/...` via gdal `/vsis3/eodata/...`.
-3. **stac** — repoint search at CDSE (`https://stac.dataspace.copernicus.eu/v1`,
-   collection `sentinel-2-l2a`); asset hrefs are `.jp2`, not COG — adapt the band
-   key/href shape in `lib/stac.js` (differs from Element84).
-4. **reader (the hard part)** — geotiff.js can't read JP2. write a node-only
-   `cog.js` sibling using **gdal-async** for windowed `/vsis3/eodata/...` JP2 reads
-   that returns the same typed arrays `detect.js` expects. leave `detect.js` and the
-   browser path untouched.
-5. **fan-out** — replace the Lambda `Event` dispatch with a local parallel runner on
-   the box (later: k8s Jobs, free control plane), preserving "PutObject == scene
-   done, resumable" to a CloudFerro bucket.
-6. **validate** — run one known AOI (e.g. a single LNG terminal) and diff detections
-   against the existing AWS run before scaling; profile **read-vs-decode** to decide
-   if a JP2→COG cache or GPU nvJPEG2000 decode is worth it (see memory).
+**hard rule: the frozen methodology must not drift.** every stage gates on a
+parity harness (below) before the JS lineage is touched. preserve byte-for-byte:
+the spectral mask, DEFAULTS/LOOSE thresholds, the score formula, the spectral
+glint discriminator, the cluster `id` hash, presence==done resumability, and the
+parquet hive layout (`flares/preset=…/mgrs=…/date=…/data.parquet`).
+
+## workspace layout (cargo)
+
+- **`core/`** — pure, no I/O, `#![no_std]`-friendly, compiles to WASM. ports
+  `lib/`: detect + thresholds, cluster, score + glint geometry, coverage, geo
+  (UTM/WGS84, `epsgFromMgrs`). slices in, detections out. ports the JS unit tests.
+- **`cli/`** (native bin) — GDAL-async equivalent via the `gdal` crate: windowed
+  `/vsis3/eodata` JP2 reads (JP2OpenJPEG, **subtract the N0400 BOA_ADD_OFFSET** on
+  spectral bands, not SCL) + COG byte-range reads; STAC search (`aws` + `cdse`
+  profiles); `runAOI` pipeline; per-scene fan-out via `rayon`; CSV + parquet out
+  via `arrow`/`parquet`. reproduces `cli.js` *and* `cf-run.js` (incl. `--bbox` /
+  `--aoi` / `--preset` / `--source aws|cdse`, per-scene `<mgrs>_<date>` files,
+  resumable).
+- **`wasm/`** — `wasm-bindgen` shim exposing core (detectBlock, cluster, score)
+  to JS for burnoff/gaslight/Lambda; built with `wasm-pack`. I/O stays JS glue
+  (browser fetch byte-ranges, pass typed arrays in) — mirrors today's split.
+
+## stages
+
+1. **scaffold + core port.** workspace; port `core/` 1:1 from JS with tests.
+2. **parity harness (gate).** golden scenes — reuse the JP2/COG-verified set
+   (e.g. the 3228=3228 scene). Rust core vs the JS reference → identical detection
+   counts/fields. nothing downstream proceeds until green.
+3. **native CLI.** GDAL I/O + STAC + fan-out + parquet; match `cli.js`/`cf-run.js`
+   output on a real AOI. cross-compile musl static (or build on the box).
+4. **WASM + consumer cutover.** build `wasm/`, wire burnoff/gaslight/Lambda to it,
+   smoke-test, then retire `lib/` JS, `cog-gdal.js`, vendored geotiff.
+5. **CloudFerro.** `box.sh run` ships+runs the static binary instead of
+   `node cf-run.js`; `cloud-init.yaml` drops node/geotiff for the binary (+GDAL).
+   up/archive/pull/down/publish, eodata per-VM creds, DuckDB+parquet archive —
+   **unchanged**. the box stays disposable; the S3 archive persists.
+6. **prune.** delete the JS lineage once parity holds and consumers are migrated.
+   target end state: `core/ cli/ wasm/ cloudferro/ aoi/` + Cargo workspace.
+
+## non-goals / keep
+
+- don't reimplement raster decode — bind libgdal (JP2) and the JS GeoTIFF decoder
+  (browser) as today; only the *compute* moves to Rust/WASM.
+- DuckDB stays the analytics/scoring/archive layer; the hive parquet scheme and
+  the web-map `publish` path are untouched.
+- a later, optional egress-zero step (Sentinel Hub batch / openEO per-pixel
+  reduction near the archive) is out of scope here — note it, don't build it.

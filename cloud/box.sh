@@ -152,13 +152,22 @@ pull(){
   echo "  $(find "$LOCAL_DATA" -name '*.csv' | wc -l | tr -d ' ') scene CSVs in $LOCAL_DATA"
 }
 
-# grow a hive-partitioned parquet collection on CloudFerro object storage —
-# s3://$BUCKET/detections/mgrs=…/date=…/data.parquet — the same per-tile
-# archive the web api scene-store keeps, queryable in one read_parquet(…,
-# hive_partitioning=true). one deterministic-key parquet per scene (an S3 PUT, so
-# re-archiving replaces rather than duplicates — duckdb can't overwrite partition
-# dirs on a remote fs). duckdb runs on the box (in-region); project S3 creds come
-# from openstack ec2. mgrs/date live in the path, so they're EXCLUDEd from columns.
+# roll the per-scene CSVs up into BOTH published artifacts in one pass:
+#   detections/  the raw archive — hive parquet s3://$BUCKET/detections/mgrs=…/
+#                data.parquet, ONE deterministic-key parquet PER TILE (not per scene).
+#                resumability is the per-scene CSV layer (presence==done), so the
+#                parquet rollup is free to coarsen — per-tile gives ~10²-not-10⁴
+#                objects of a useful size, far fewer footer reads for bulk scans and
+#                the web map's range requests. each tile file is SELECT DISTINCT over
+#                every AOI's CSVs for that tile (cross-AOI detections union + dedup —
+#                the AOI-agnostic data model — vs the old per-scene last-write-wins),
+#                ORDER BY date so row-group date stats prune within a file.
+#   clusters/    the derived VIEW — s2-flares cluster over the fresh detections/ →
+#                clusters/data.parquet (one row/cluster + nested detections list).
+#                co-produced here, not in a separate run; the web map still re-clusters
+#                live in wasm for arbitrary windows. clustered full-window (START/END).
+# duckdb (rollup) + the cli (cluster) both run on the box, in-region; mgrs lives in the
+# detections path (EXCLUDEd), date stays a column; project S3 creds from openstack ec2.
 archive(){
   auth
   openstack container show "$BUCKET" >/dev/null 2>&1 || { say "Bucket $BUCKET"; openstack container create "$BUCKET" >/dev/null; }
@@ -166,10 +175,15 @@ archive(){
   say "Archive $OUT → s3://$BUCKET/detections (per-tile parquet)"
   local b64; b64=$(printf '%s' "$ARCHIVER" | base64 | tr -d '\n')
   sshx "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' OUT='$REPO_DIR/$OUT' bash"
+  say "Cluster view → s3://$BUCKET/clusters/data.parquet"
+  sshx "S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
+        AWS_ACCESS_KEY_ID='$ak' AWS_SECRET_ACCESS_KEY='$sk' \
+        s2-flares cluster --archive 's3://$BUCKET/detections/**/*.parquet' \
+          --out 's3://$BUCKET/clusters/data.parquet' --start '${START:-2015-01-01}' --end '${END:-2100-01-01}'"
 }
 
-# runs on the box: one COPY per non-empty scene CSV to its deterministic S3 key,
-# then a read-back tally. heredoc'd here so box.sh stays a single file.
+# runs on the box: one COPY per tile (union of all that tile's non-empty scene CSVs)
+# to its deterministic S3 key, then a read-back tally. heredoc'd so box.sh stays one file.
 ARCHIVER=$(cat <<'EOS'
 set -euo pipefail
 DDB=~/.duckdb/cli/latest/duckdb
@@ -177,30 +191,32 @@ S3="INSTALL httpfs; LOAD httpfs;
 SET s3_endpoint='s3.$REGION.cloudferro.com'; SET s3_region='$REGION';
 SET s3_url_style='path'; SET s3_use_ssl=true;
 SET s3_access_key_id='$AK'; SET s3_secret_access_key='$SK';"
+# tiles with ≥1 detection (skip header-only scenes); <mgrs>_<date>.csv → mgrs.
+tiles=$(for f in "$OUT"/*/*.csv; do [ "$(wc -l <"$f")" -gt 1 ] && b=$(basename "$f" .csv) && echo "${b%_*}"; done | sort -u)
 { echo "$S3"
-  for f in "$OUT"/*/*.csv; do
-    [ -e "$f" ] && [ "$(wc -l <"$f")" -gt 1 ] || continue   # skip header-only (empty) scenes
-    b=$(basename "$f" .csv); m=${b%_*}; d=${b#*_}
-    echo "COPY (SELECT * EXCLUDE(mgrs, date) FROM read_csv('$f', union_by_name=true)) TO 's3://$BUCKET/detections/mgrs=$m/date=$d/data.parquet' (FORMAT parquet);"
+  for m in $tiles; do
+    echo "COPY (SELECT DISTINCT * EXCLUDE(mgrs) FROM read_csv('$OUT/*/${m}_*.csv', union_by_name=true) ORDER BY date) TO 's3://$BUCKET/detections/mgrs=$m/data.parquet' (FORMAT parquet);"
   done
 } | "$DDB"
 "$DDB" -c "$S3 SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/detections/**/data.parquet', hive_partitioning=true);"
 EOS
 )
 
-# make the archive a web-map backend: anonymous public-read on detections/* + CORS, so
-# a browser (e.g. DuckDB-wasm) can range-read the parquet directly. one-time per
-# bucket; needs aws-cli (RadosGW S3 policy/CORS aren't openstack/swift operations).
+# make the archive a web-map backend: anonymous public-read on detections/* +
+# clusters/* + CORS, so a browser (e.g. DuckDB-wasm) can range-read the parquet
+# directly — scalar cluster pins from clusters/, raw-detection reclustering from
+# detections/. one-time per bucket; needs aws-cli (RadosGW S3 policy/CORS aren't
+# openstack/swift operations).
 publish(){
   auth
   command -v aws >/dev/null || { echo "publish needs aws-cli (brew install awscli)" >&2; exit 1; }
   local ak sk; read -r ak sk < <(s3creds)
   local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api --bucket "$BUCKET")
-  say "Publishing s3://$BUCKET/detections for web-map access (public-read + CORS)"
+  say "Publishing s3://$BUCKET/{detections,clusters} for web-map access (public-read + CORS)"
   "${aws_s3[@]}" put-bucket-cors --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadDetections","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*"]}]}'
-  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/detections/…"
+  "${aws_s3[@]}" put-bucket-policy --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*"]}]}'
+  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters}/…"
 }
 
 # run cost, instantly: CloudFerro bills the flavor by the hour, so uptime × RATE is

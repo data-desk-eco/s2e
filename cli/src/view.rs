@@ -19,6 +19,20 @@ fn duckdb(sql: &str) -> Result<(), String> {
     if st.success() { Ok(()) } else { Err("duckdb exited non-zero".into()) }
 }
 
+// duckdb s3 prelude. with `S2_S3_ENDPOINT` set (the box exports it for CloudFerro)
+// we configure a path-style endpoint + creds; otherwise bare httpfs leans on the
+// aws default credential chain (local/AWS reads). prepended to every s3-touching sql.
+fn s3_prelude() -> String {
+    let mut p = String::from("INSTALL httpfs; LOAD httpfs; ");
+    if let Ok(ep) = std::env::var("S2_S3_ENDPOINT") {
+        let g = |k| std::env::var(k).unwrap_or_default();
+        p += &format!("SET s3_endpoint='{ep}'; SET s3_region='{}'; SET s3_url_style='path'; \
+            SET s3_use_ssl=true; SET s3_access_key_id='{}'; SET s3_secret_access_key='{}'; ",
+            g("S2_S3_REGION"), g("AWS_ACCESS_KEY_ID"), g("AWS_SECRET_ACCESS_KEY"));
+    }
+    p
+}
+
 fn opt_f64(s: &str) -> Option<f64> {
     match s.trim() {
         "" => None,
@@ -38,11 +52,11 @@ pub fn read_archive(archive: &str, bbox: Option<[f64; 4]>, start: &str, end: &st
         wheres.push(format!("lon >= {w} AND lon <= {e} AND lat >= {s} AND lat <= {n}"));
     }
     let sql = format!(
-        "INSTALL httpfs; LOAD httpfs; \
+        "{prelude}\
          COPY (SELECT lon, lat, date, max_b12, max_b11, b12_b11_ratio, pixels, sun_elevation, sun_azimuth, glint_score \
-         FROM read_parquet('{archive}', union_by_name=true) WHERE {}) \
+         FROM read_parquet('{archive}', union_by_name=true) WHERE {wheres}) \
          TO '{out_s}' (FORMAT CSV, HEADER)",
-        wheres.join(" AND ")
+        prelude = s3_prelude(), wheres = wheres.join(" AND ")
     );
     duckdb(&sql)?;
     let text = std::fs::read_to_string(&out).map_err(|e| format!("read dets: {e}"))?;
@@ -117,8 +131,9 @@ pub fn write_view(clusters: &[Cluster], out: &str) -> Result<(), String> {
         'glint_suspect':'BOOLEAN','date':'DATE','m_max_b12':'DOUBLE','peak_b11':'DOUBLE',\
         'pixels':'INTEGER','sun_elevation':'DOUBLE','sun_azimuth':'DOUBLE','m_lon':'DOUBLE','m_lat':'DOUBLE'}";
     // group members back into one row per cluster with a nested `detections` list.
+    let prelude = s3_prelude();
     let sql = format!(
-        "INSTALL httpfs; LOAD httpfs; \
+        "{prelude}\
          COPY (SELECT cluster_id AS id, \
            any_value(cluster_lon) AS lon, any_value(cluster_lat) AS lat, \
            any_value(cluster_max_b12) AS max_b12, any_value(cluster_avg_b12) AS avg_b12, \

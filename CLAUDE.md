@@ -47,21 +47,30 @@ lives in the `cli/` (GDAL) and `wasm/` (JS glue) shells.
 This is the central design decision; everything else follows from it.
 
 - **The archive stores DETECTIONS, never clusters.** One row per detection, the
-  detector's own field names, hive-partitioned parquet
-  `detections/mgrs=…/date=…/data.parquet`, written per scene (presence == done
-  → resumable, idempotent, incremental). It is **AOI-agnostic**: a flare at
-  `(lon,lat)` on a date is a fact independent of the viewport that surfaced it, so
-  AOI identity is a query-time tag, not a stored column.
+  detector's own field names. **Resumability is the per-scene CSV layer** — `detect`
+  writes one `<mgrs>_<date>.csv` per scene, presence == done → resumable, idempotent,
+  incremental. The published parquet is a **per-tile rollup** of those CSVs
+  (`detections/mgrs=…/data.parquet`, date a column not a path level): one file per
+  MGRS tile, ~10² objects of useful size rather than ~10⁴ tiny per-scene files —
+  fewer footer/range reads for both bulk scans and the web map. The parquet
+  granularity is free precisely because resumability lives in the CSVs, not here.
+  It is **AOI-agnostic**: a flare at `(lon,lat)` on a date is a fact independent of
+  the viewport that surfaced it, so AOI identity is a query-time tag, not a stored
+  column — and the rollup `SELECT DISTINCT`s across every AOI's CSVs for a tile,
+  unioning overlapping-AOI detections rather than letting one clip win.
 - **Clusters are a derived VIEW.** Clustering is a pure function of `(detections,
   viewport, date-range, thresholds)` — it would go stale the moment a date slider
   moves — so it is run on read, never stored as the archive. Two consumers, one
   `core::cluster_detections`: the CLI (journalist GeoJSON) and the web map (in wasm,
   over raw detections it pulls off the archive).
-- **Why not pre-cluster the archive?** Clusters are cross-date aggregates, so they
-  can't be written per-scene/idempotently; they bake in a date window; and they'd
-  duplicate the detection rows. So the archive stays detections; the view is a
-  separate, regenerable artifact (a different bucket prefix, `clusters/…`), computed
-  by a separate `s2-flares cluster` run.
+- **Why not pre-cluster the archive?** Clusters are cross-date aggregates that bake
+  in a date window and would duplicate the detection rows — so the *source of truth*
+  stays detections, never clusters. The cluster view is a separate, regenerable
+  artifact in its own prefix (`clusters/…`). The box **co-produces it in the rollup
+  pass** (`archive` writes both `detections/` and `clusters/data.parquet`) for
+  freshness and one fewer command — but it is still derived, not authoritative: the
+  web map re-clusters raw detections live in wasm for any viewport/date window the
+  stored full-window snapshot doesn't cover.
 - **The view's shape.** One row per cluster + a nested `detections: list<struct>`
   column. A reader column-projects the scalar fields for cheap map pins and only
   fetches the array for drill-down (a double filter for transfer: clustering drops
@@ -152,16 +161,22 @@ co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2` direc
   session, non-interactive when a gitignored `.env` sets `CLOUDFERRO_PASSWORD` +
   `CLOUDFERRO_TOTP_SECRET` (single-quote the values). The openrc session token lasts
   hours; the TOTP code is spent once per invocation.
-- **`archive`** grows a per-tile parquet collection on CloudFerro object storage
-  (`s3://$BUCKET/detections/mgrs=…/date=…/data.parquet`), one deterministic-key
-  parquet per scene (idempotent PUT), queryable in one `read_parquet('s3://…/**/
-  *.parquet', hive_partitioning=true)`. DuckDB runs on the box (in-region) with
-  project S3 creds from `openstack ec2 credentials`; the box is disposable, the S3
-  archive persists.
+- **`archive`** rolls the per-scene CSVs up into BOTH published artifacts in one
+  pass. `detections/`: a per-tile parquet collection on CloudFerro object storage
+  (`s3://$BUCKET/detections/mgrs=…/data.parquet`), one deterministic-key parquet per
+  MGRS tile (idempotent PUT; a `SELECT DISTINCT … ORDER BY date` union of that tile's
+  scene CSVs), queryable in one `read_parquet('s3://…/**/*.parquet',
+  hive_partitioning=true)`. `clusters/`: the derived view (`clusters/data.parquet`),
+  produced by running `s2-flares cluster` over the fresh `detections/` full-window.
+  DuckDB (rollup) and the cli (cluster) both run on the box (in-region) with project
+  S3 creds from `openstack ec2 credentials` (the cli's duckdb reads them from
+  `S2_S3_ENDPOINT`/`AWS_*` env); the box is disposable, the S3 archive persists.
 - **`publish`** makes the archive a web-map backend: anonymous public-read on
-  `detections/*` + CORS (via aws-cli — RadosGW S3 ops), so DuckDB-wasm reads the parquet
-  directly over HTTP range requests; the hive layout maps viewport tiles+dates
-  straight to object URLs (no LIST). Warsaw-only, no CDN — egress ~€0.0064/GB.
+  `detections/*` + `clusters/*` + CORS (via aws-cli — RadosGW S3 ops), so DuckDB-wasm
+  reads the parquet directly over HTTP range requests — scalar pins from `clusters/`,
+  live reclustering from `detections/` (the hive layout maps each viewport tile
+  straight to its object URL, no LIST, date filtered in-file via row-group stats).
+  Warsaw-only, no CDN — egress ~€0.0064/GB.
 
 ## Consumers
 

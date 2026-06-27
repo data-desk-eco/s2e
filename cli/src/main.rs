@@ -9,7 +9,8 @@
 //!       cluster VIEW — run core clustering over archived (or freshly detected)
 //!       detections; `.geojson` → rich FeatureCollection (journalist), else nested
 //!       parquet (one row/cluster + a `detections` list; the web map column-skips
-//!       it). computed separately from detection, written to a `clusters/` prefix.
+//!       it). a derived view in its own `clusters/` prefix — on the box it's
+//!       co-produced with the detections/ rollup; the web map re-clusters live in wasm.
 
 mod stac;
 mod read;

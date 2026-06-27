@@ -23,14 +23,18 @@ Two artifacts, and the key design decision is the relationship between them:
   carrying the full discriminating metric set so any gate is reconstructable
   downstream: `max_b12, avg_b12, peak_b11, b12_b11_ratio, peakedness, pixels,
   warm_size, saturated, sun_elevation, sun_azimuth, glint_angle, glint_score`.
-  Hive-partitioned parquet, `detections/mgrs=…/date=…/data.parquet`, written
-  per scene (presence == done → resumable). AOI-agnostic: a flare at `(lon,lat)` on
-  a date is a fact independent of the viewport that surfaced it.
+  Resumability is the per-scene CSV layer (one `<mgrs>_<date>.csv`, presence == done
+  → resumable); the published archive is a per-tile rollup of those CSVs,
+  `detections/mgrs=…/data.parquet` (date a column, not a path level) — one parquet
+  per MGRS tile, ~10² objects of useful size rather than ~10⁴ tiny per-scene files.
+  AOI-agnostic: a flare at `(lon,lat)` on a date is a fact independent of the viewport
+  that surfaced it (the rollup `DISTINCT`s across overlapping AOIs).
 
-- **Clusters** are a derived **view**, never stored as the archive. Clustering is a
+- **Clusters** are a derived **view**, never the source of truth. Clustering is a
   pure function of `(detections, viewport, date-range, thresholds)`, so it is run on
-  read — by the CLI (journalist GeoJSON) and by the web map (in wasm, over raw
-  detections it pulls off the archive). The view is one row per cluster + a nested
+  read — by the web map (in wasm, over raw detections it pulls off `detections/`) for
+  any window, and as a stored full-window snapshot (`clusters/data.parquet`)
+  co-produced with the rollup for cheap initial pins. One row per cluster + a nested
   `detections` list column, so a reader can column-project the scalar fields for
   cheap map pins and only fetch the array for drill-down.
 
@@ -85,8 +89,9 @@ only the compute crosses. Build with `wasm-pack build wasm/`.
 
 `cloud/box.sh` is the whole pipeline on a CloudFerro WAW3-2 box co-located with
 the Copernicus `eodata` archive: `up` (provision) → `run <detect args>` (detached,
-resumable native detection) → `archive` (grow the per-tile parquet collection on
-object storage) → `pull` / `down`; `publish` makes the archive a DuckDB-wasm
+resumable native detection) → `archive` (roll the per-scene CSVs up into both
+`detections/` per-tile parquet and the `clusters/` view, in one pass on object
+storage) → `pull` / `down`; `publish` makes the archive a DuckDB-wasm
 web-map backend (public-read + CORS). The box builds and runs the native binary;
 it stays disposable, the S3 archive persists.
 

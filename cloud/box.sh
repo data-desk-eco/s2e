@@ -139,6 +139,7 @@ run(){
 watch(){
   sshx 'log=/tmp/cfrun.log; n=0
     for _ in $(seq 1 2400); do
+      [ -f "$log" ] || { sleep 3; continue; }   # run not yet launched — wait, do not leak the input-redirect error
       t=$(wc -l <"$log" 2>/dev/null || echo 0)
       [ "$t" -gt "$n" ] && { sed -n "$((n+1)),${t}p" "$log"; n=$t; }
       grep -q "^done:" "$log" 2>/dev/null && break

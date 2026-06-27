@@ -1,0 +1,13 @@
+[package]
+name = "s2-flares-gpu"
+version.workspace = true
+edition.workspace = true
+description = "nvJPEG2000 GPU decode shim for the s2-flares full-tile path (CUDA only)"
+
+# the whole CUDA surface lives here: build.rs compiles src/shim.cu with nvcc and
+# links nvjpeg2k + cudart. nothing else in the workspace pulls a CUDA dependency.
+[lib]
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "1"

@@ -15,6 +15,8 @@
 mod stac;
 mod read;
 mod view;
+#[cfg(feature = "gpu")]
+mod gpu;
 
 use std::fs;
 use std::path::Path;
@@ -75,6 +77,16 @@ struct Common {
     /// AOI geojson FeatureCollection (one run per feature).
     #[arg(long, value_name = "FILE")]
     aoi: Option<String>,
+    /// Wide-area: detect every MGRS tile intersecting this region over its WHOLE
+    /// tile (not a window). The GPU reader's target — full-tile mapping, not points.
+    #[arg(long, value_name = "W,S,E,N", value_parser = parse_bbox, allow_hyphen_values = true)]
+    region: Option<[f64; 4]>,
+    /// Restrict --region to these MGRS tiles (comma-separated, e.g. 39RWN,39RXN).
+    #[arg(long, value_name = "MGRS,…", value_delimiter = ',')]
+    tiles: Vec<String>,
+    /// Use the GPU reader (nvJPEG2000 full-tile decode) — needs a --features gpu build.
+    #[arg(long)]
+    gpu: bool,
     /// Halo around each aoi, km.
     #[arg(long, value_name = "KM", default_value_t = 0.0)]
     buffer: f64,
@@ -143,7 +155,7 @@ fn parse_bbox(s: &str) -> Result<[f64; 4], String> {
     v.try_into().map_err(|_| "expected W,S,E,N".into())
 }
 
-struct Aoi { id: String, name: String, bbox: [f64; 4] }
+struct Aoi { id: String, name: String, bbox: [f64; 4], full_tile: bool }
 
 fn die(msg: &str) -> ! { eprintln!("{msg}"); std::process::exit(1); }
 
@@ -165,7 +177,9 @@ fn geom_bbox(geom: &serde_json::Value) -> [f64; 4] {
 }
 
 fn load_aois(c: &Common) -> Vec<Aoi> {
-    if let Some(b) = c.bbox { return vec![Aoi { id: "aoi".into(), name: String::new(), bbox: b }]; }
+    // --region: one wide-area job, scenes detected over their whole tile (full_tile).
+    if let Some(b) = c.region { return vec![Aoi { id: "region".into(), name: String::new(), bbox: b, full_tile: true }]; }
+    if let Some(b) = c.bbox { return vec![Aoi { id: "aoi".into(), name: String::new(), bbox: b, full_tile: false }]; }
     let text = fs::read_to_string(c.aoi.as_ref().unwrap()).unwrap_or_else(|e| die(&format!("read aoi: {e}")));
     let gj: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| die(&format!("parse aoi: {e}")));
     let feats = gj["features"].as_array().cloned().unwrap_or_default();
@@ -175,8 +189,17 @@ fn load_aois(c: &Common) -> Vec<Aoi> {
             .or_else(|| p["ProjectID"].as_str().map(String::from))
             .unwrap_or_else(|| idx.to_string());
         let name = p["name"].as_str().or_else(|| p["TerminalName"].as_str()).unwrap_or("").to_string();
-        Aoi { id, name, bbox: pad_bbox(geom_bbox(&f["geometry"]), c.buffer) }
+        Aoi { id, name, bbox: pad_bbox(geom_bbox(&f["geometry"]), c.buffer), full_tile: false }
     }).collect()
+}
+
+// the per-scene detection region: a whole tile (full_tile/--region wide-area) or the
+// query window. orthogonal to reader choice — the driver just passes this as `region`.
+fn det_bbox(aoi: &Aoi, item: &stac::Item) -> [f64; 4] { if aoi.full_tile { item.bbox } else { aoi.bbox } }
+
+// restrict a scene list to --tiles when given (a filter over the region search).
+fn filter_tiles(c: &Common, items: &mut Vec<stac::Item>) {
+    if !c.tiles.is_empty() { items.retain(|i| c.tiles.iter().any(|t| i.mgrs == *t)); }
 }
 
 fn fmt(x: f64) -> String {
@@ -201,12 +224,12 @@ fn main() {
     let pool = |n: usize| rayon::ThreadPoolBuilder::new().num_threads(n.max(1)).build().unwrap();
     match &cli.cmd {
         Cmd::Detect { c, out } => {
-            if c.bbox.is_none() && c.aoi.is_none() { die("detect: provide --bbox or --aoi"); }
+            if c.bbox.is_none() && c.aoi.is_none() && c.region.is_none() { die("detect: provide --bbox, --aoi, or --region"); }
             run_detect(c, out, &pool(c.concurrency));
         }
         Cmd::Cluster { c, archive, out, min_dates, min_avg_b12, score_threshold } => {
-            if archive.is_none() && c.bbox.is_none() && c.aoi.is_none() {
-                die("cluster: provide --archive GLOB, or --bbox/--aoi to detect fresh");
+            if archive.is_none() && c.bbox.is_none() && c.aoi.is_none() && c.region.is_none() {
+                die("cluster: provide --archive GLOB, or --bbox/--aoi/--region to detect fresh");
             }
             run_cluster(c, archive, out, *min_dates, *min_avg_b12, *score_threshold, &pool(c.concurrency));
         }
@@ -219,18 +242,21 @@ fn run_detect(c: &Common, out: &str, pool: &rayon::ThreadPool) {
     let aois = load_aois(c);
     let (start, end) = c.dates();
     let harmonize = c.harmonize();
-    eprintln!("detect: {} aoi(s) | {start} → {end} | b12≥{} b11≥{} | source={} → {out}/", aois.len(), t.b12_min, t.b11_min, c.source);
+    let reader = read::make_reader(c.gpu, harmonize).unwrap_or_else(|e| die(&e));
+    eprintln!("detect: {} aoi(s) | {start} → {end} | b12≥{} b11≥{} | source={}{} → {out}/",
+        aois.len(), t.b12_min, t.b11_min, c.source, if c.gpu { " gpu" } else { "" });
     let (mut scenes, mut detected) = (0usize, 0usize);
     for aoi in &aois {
-        let items = match stac::search(aoi.bbox, &start, &end, c.cloud, &c.source) {
+        let mut items = match stac::search(aoi.bbox, &start, &end, c.cloud, &c.source) {
             Ok(v) => v, Err(e) => { eprintln!("  {} search FAIL: {e}", aoi.id); continue; }
         };
+        filter_tiles(c, &mut items);
         scenes += items.len();
         let (done, skipped, det) = pool.install(|| {
             items.par_iter().map(|item| {
                 let path = format!("{out}/{}/{}_{}.csv", aoi.id, item.mgrs, item.date);
                 if Path::new(&path).exists() { return (0usize, 1usize, 0usize); }
-                match read::detect_image(item, aoi.bbox, &t, false, harmonize) {
+                match read::detect_scene(&*reader, item, det_bbox(aoi, item), aoi.full_tile, &t, false) {
                     Ok((dets, _)) => {
                         let _ = fs::create_dir_all(Path::new(&path).parent().unwrap());
                         let body: String = std::iter::once(SCENE_HEADER.to_string())
@@ -263,15 +289,17 @@ fn run_cluster(c: &Common, archive: &Option<String>, out: &Option<String>,
             let t = c.thresholds();
             let aois = load_aois(c);
             let harmonize = c.harmonize();
+            let reader = read::make_reader(c.gpu, harmonize).unwrap_or_else(|e| die(&e));
             eprintln!("cluster: fresh detect over {} aoi(s) | {start} → {end}", aois.len());
             let mut dets = Vec::new();
             let mut obs: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
             for aoi in &aois {
-                let items = match stac::search(aoi.bbox, &start, &end, c.cloud, &c.source) {
+                let mut items = match stac::search(aoi.bbox, &start, &end, c.cloud, &c.source) {
                     Ok(v) => v, Err(e) => { eprintln!("  {} search FAIL: {e}", aoi.id); continue; }
                 };
+                filter_tiles(c, &mut items);
                 let res: Vec<(String, bool, Vec<Detection>)> = pool.install(|| items.par_iter().map(|item|
-                    match read::detect_image(item, aoi.bbox, &t, true, harmonize) {
+                    match read::detect_scene(&*reader, item, det_bbox(aoi, item), aoi.full_tile, &t, true) {
                         Ok((d, cf)) => (item.date.clone(), cf, d),
                         Err(e) => { eprintln!("  {} {}_{} FAIL: {e}", aoi.id, item.mgrs, item.date); (item.date.clone(), false, Vec::new()) }
                     }).collect());

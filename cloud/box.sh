@@ -25,6 +25,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# GPU=1 → the full-tile nvJPEG2000 path: gpu cloud-init + an L40S vGPU flavor + the
+# NVIDIA driver image, and `run`/`parity` build with --features gpu. Override
+# FLAVOR/IMAGE/RATE for another gpu line (WAW3-2 quota here fits vm.l40s.1/.2; the
+# passthrough gpu.* flavors need a quota bump). The cpu path is unchanged (GPU unset).
+if [ "${GPU:-}" = 1 ]; then
+  : "${CLOUD_INIT:=cloud-init-gpu.yaml}"; : "${FLAVOR:=vm.l40s.1}"
+  : "${IMAGE:=Ubuntu 22.04 NVIDIA}"; : "${RATE:=0.45}"
+fi
+: "${CLOUD_INIT:=cloud-init.yaml}"
 : "${VM:=s2-flares}"
 : "${FLAVOR:=eo1.large}"
 : "${IMAGE:=Ubuntu 22.04 LTS}"
@@ -88,7 +97,7 @@ up(){
       --flavor "$FLAVOR" --image "$IMAGE" --key-name "$KEYPAIR" --security-group "$SECGROUP" \
       --nic net-id="$(openstack network show "$NET" -f value -c id)" \
       --nic net-id="$(openstack network show "$EODATANET" -f value -c id)" \
-      --user-data cloud-init.yaml --wait >/dev/null
+      --user-data "$CLOUD_INIT" --wait >/dev/null
   fi
   say "Floating IP"
   local port fip
@@ -128,8 +137,16 @@ run(){
       args+=(--aoi _aoi.geojson); ((i++))
     else args+=("${a[i]}"); fi
   done
-  say "Build on $ip (incremental)"
-  sshx "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && cargo build --release -q -p s2-flares-cli"
+  # gpu box: build with the feature, source the cuda env (nvcc/CUDA_PATH live in
+  # /etc/profile.d/cuda.sh — not on the non-login ssh PATH), and select the gpu reader
+  # at runtime (the --features build only COMPILES it; --gpu picks it) unless already set.
+  local feat="" cudaenv=""
+  if [ "${GPU:-}" = 1 ]; then
+    feat=" --features gpu"; cudaenv=". /etc/profile.d/cuda.sh && "
+    [[ " ${args[*]} " == *" --gpu "* ]] || args+=(--gpu)
+  fi
+  say "Build on $ip (incremental)$feat"
+  sshx "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && ${cudaenv}cargo build --release -q -p s2-flares-cli$feat"
   say "Detection on $ip (detached, resumable) → $REPO_DIR/$OUT"
   sshx "cd $REPO_DIR && nohup bash -lc './target/release/s2-flares detect --source cdse ${args[*]} --out $OUT' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  started — streaming progress (Ctrl-C is safe, the run continues)'"
   watch
@@ -145,6 +162,18 @@ watch(){
       grep -q "^done:" "$log" 2>/dev/null && break
       sleep 3
     done'
+}
+
+# the gpu↔cpu parity gate (gpu box only): assert nvJPEG2000 detections == GDAL/OpenJPEG
+# detections byte-for-byte over real scenes. PARITY_BBOX a small test region; optional
+# PARITY_TILE/START/END narrow it. lossless JP2 → identical pixels → identical core output.
+parity(){
+  : "${PARITY_BBOX:?set PARITY_BBOX=W,S,E,N (a small test region)}"
+  local ip; ip=$(boxip)
+  say "Parity gpu-vs-cpu on $ip"
+  sshx "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && . /etc/profile.d/cuda.sh && . /etc/profile.d/eodata.sh && \
+    S2_PARITY_BBOX='$PARITY_BBOX' ${PARITY_TILE:+S2_PARITY_TILE='$PARITY_TILE'} ${START:+S2_PARITY_START='$START'} ${END:+S2_PARITY_END='$END'} \
+    cargo test --release -p s2-flares-cli --features gpu parity -- --ignored --nocapture"
 }
 
 pull(){
@@ -272,7 +301,7 @@ all(){ up; run "$@"; archive; pull; down; }
 
 case "${1:-}" in
   up) up;; ip) ip;; ssh) go_ssh;; cost) cost;; down) down;;
-  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; publish) publish;; wipe) wipe;;
+  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; publish) publish;; wipe) wipe;; parity) parity;;
   all) shift; all "$@";;
-  *) echo "usage: $0 {up | run <detect args> | watch | pull | archive | publish | wipe | cost | down | all <detect args> | ssh | ip}" >&2; exit 1;;
+  *) echo "usage: $0 {up | run <detect args> | watch | pull | archive | publish | wipe | parity | cost | down | all <detect args> | ssh | ip}  (GPU=1 → gpu box)" >&2; exit 1;;
 esac

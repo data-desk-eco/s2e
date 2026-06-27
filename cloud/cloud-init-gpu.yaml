@@ -1,0 +1,33 @@
+#cloud-config
+# gpu box: the cpu setup (rust + gdal + duckdb, clone, build) PLUS the CUDA toolkit +
+# nvJPEG2000, building the cli with --features gpu — the full-tile nvjpeg2000 reader.
+# the "Ubuntu 22.04 NVIDIA" image already ships the vGPU driver (libcuda), so we add
+# only the toolkit (nvcc/cudart/headers) and the nvjpeg2000 redistributable on top.
+# everything else (eodata per-VM creds, duckdb for archive) is identical to the cpu box.
+package_update: true
+packages: [git, gdal-bin, libgdal-dev, clang, libclang-dev, pkg-config, build-essential, ca-certificates, curl, unzip, python3, jq]
+runcmd:
+  - su - eouser -c 'curl -fsSL https://install.duckdb.org | bash'
+  - ln -sf /home/eouser/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb
+  # CUDA toolkit + nvJPEG2000 from the NVIDIA cuda apt repo (driver already in image).
+  # package names vary by toolkit version; the fallback covers the unversioned aliases.
+  - curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb -o /tmp/cuda-keyring.deb
+  - dpkg -i /tmp/cuda-keyring.deb
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-toolkit libnvjpeg2k0-cuda-12 libnvjpeg2k0-dev-cuda-12
+  - printf 'export CUDA_PATH=/usr/local/cuda\nexport PATH=$PATH:/usr/local/cuda/bin\nexport LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu/libnvjpeg2k/12:$LD_LIBRARY_PATH\n' > /etc/profile.d/cuda.sh
+  # rust + clone + build the cli WITH the gpu feature (gdal-sys bindgen needs clang;
+  # the gpu crate's build.rs invokes nvcc and links nvjpeg2k + cudart).
+  - su - eouser -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
+  - su - eouser -c 'git clone https://github.com/data-desk-eco/s2-flares.git s2-flares && cd s2-flares && . $HOME/.cargo/env && . /etc/profile.d/cuda.sh && cargo build --release -p s2-flares-cli --features gpu'
+  - ln -sf /home/eouser/s2-flares/target/release/s2-flares /usr/local/bin/s2-flares
+  # WAW3-2 eodata access: per-VM S3 keys + endpoint from the metadata service.
+  - |
+    curl -s http://169.254.169.254/openstack/latest/vendor_data2.json | python3 -c '
+    import sys, json
+    m = json.load(sys.stdin)["nova"]["vmconfig"]["mountpoints"][0]
+    print("export AWS_S3_ENDPOINT=%s" % m["s3_url"])
+    print("export AWS_ACCESS_KEY_ID=%s" % m["s3_access_key"])
+    print("export AWS_SECRET_ACCESS_KEY=%s" % m["s3_secret_key"])
+    print("export AWS_VIRTUAL_HOSTING=FALSE")
+    print("export AWS_HTTPS=YES")' > /etc/profile.d/eodata.sh

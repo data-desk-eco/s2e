@@ -820,8 +820,10 @@ version = "2.0.0"
 dependencies = [
  "clap",
  "gdal",
+ "gdal-sys",
  "rayon",
  "s2-flares-core",
+ "s2-flares-gpu",
  "serde_json",
  "ureq",
 ]
@@ -831,6 +833,13 @@ name = "s2-flares-core"
 version = "2.0.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "s2-flares-gpu"
+version = "2.0.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

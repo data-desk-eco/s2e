@@ -50,8 +50,11 @@ lambda/
   deploy.sh         One-command deploy to us-west-2 (function + IAM + S3 bucket;
                     HANDLER=lambda/api.handler PUBLIC_URL=1 deploys the web API)
 cloudferro/
-  provision.sh      One-command CloudFerro WAW3-2 box: OIDC auth → app credential →
-                    VM on the eodata network + floating IP + cloud-init (node/gdal/duckdb)
+  openrc.sh         Vendored official CloudFerro 2FA openrc — `source` for an
+                    authenticated openstack session (password+TOTP → keystone token)
+  Makefile          make up/ip/ssh/down: provision the WAW3-2 box (keypair, secgroup,
+                    tenant net, VM on the eodata net + floating IP) with plain openstack
+  cloud-init.yaml   box bootstrap: node 22 / gdal / duckdb + clone, anonymous eodata env
 aoi/                Site catalogues that drive runs (raw source + a DuckDB .sql that
                     fits it to the standard AOI geojson schema; see aoi/README.md)
   lng-terminals.sql / .sh   Global LNG export terminals (GEM) → AOIs → Lambda fan-out
@@ -218,13 +221,17 @@ directly instead of AWS COGs. Three small pieces, the detector untouched:
   <mgrs>_<date>.csv` (handler columns); file presence == scene done → resumable,
   scale-to-zero between runs. `--source aws` (pre-harmonised COGs, no offset) is
   for local testing; `--source cdse` (default) is the box.
-- **`cloudferro/provision.sh`** stands the box up. The account is OIDC-federated
-  (Keycloak) with 2FA, so plain keystone password auth fails (HTTP 401) — the
-  script does one password+TOTP grant, then mints an **application credential**
-  (survives 2FA, non-interactive) into `~/.config/openstack/clouds.yaml`, and
-  provisions keypair + security group + a VM on the `eodata` provider network with
-  a floating IP. eodata reads are anonymous in-region (`data.cloudferro.com`,
-  `CLOUDFERRO`/`PUBLIC`), so cf-run needs no secrets. `DESTROY=1` tears it down.
+- **`cloudferro/Makefile` + `openrc.sh`** stand the box up. The account is
+  OIDC-federated (Keycloak) with 2FA, so plain keystone password auth fails —
+  `openrc.sh` is CloudFerro's own 2FA openrc (vendored): `source` it for one
+  password+TOTP prompt and you get an authenticated `openstack` session (keycloak
+  ROPC grant → scoped keystone token). The Makefile sources it per target and
+  drives provisioning with plain openstack: `make up` (keypair, security group,
+  tenant net, VM on the `eodata` provider network + floating IP, cloud-init),
+  `make ip`/`ssh`, `make down` to scale to zero. eodata reads are anonymous
+  in-region (`data.cloudferro.com`, `CLOUDFERRO`/`PUBLIC`), so cf-run needs no
+  secrets. (No application credential / clouds.yaml machinery — the openrc session
+  token lasts hours, long enough for a provisioning session.)
 
 ## Consumers
 

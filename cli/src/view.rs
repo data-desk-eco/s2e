@@ -26,9 +26,14 @@ fn s3_prelude() -> String {
     let mut p = String::from("INSTALL httpfs; LOAD httpfs; ");
     if let Ok(ep) = std::env::var("S2_S3_ENDPOINT") {
         let g = |k| std::env::var(k).unwrap_or_default();
+        // duckdb's archive creds are kept SEPARATE from AWS_* so the same process can
+        // also drive gdal /vsis3 against eodata (AWS_*) during the coverage scan: the
+        // duckdb (project-bucket) creds come from S2_S3_* first, falling back to AWS_*.
+        let key = |s2, aws| { let v = g(s2); if v.is_empty() { g(aws) } else { v } };
         p += &format!("SET s3_endpoint='{ep}'; SET s3_region='{}'; SET s3_url_style='path'; \
             SET s3_use_ssl=true; SET s3_access_key_id='{}'; SET s3_secret_access_key='{}'; ",
-            g("S2_S3_REGION"), g("AWS_ACCESS_KEY_ID"), g("AWS_SECRET_ACCESS_KEY"));
+            g("S2_S3_REGION"), key("S2_S3_ACCESS_KEY", "AWS_ACCESS_KEY_ID"),
+            key("S2_S3_SECRET_KEY", "AWS_SECRET_ACCESS_KEY"));
     }
     p
 }
@@ -81,6 +86,30 @@ pub fn read_archive(archive: &str, bbox: Option<[f64; 4]>, start: &str, end: &st
         });
     }
     Ok(dets)
+}
+
+/// distinct mgrs tiles in the archive + each tile's detection bounding box — the
+/// per-tile STAC search areas for the coverage scan. reads the hive `mgrs` partition
+/// key (the per-tile rollup EXCLUDEs mgrs from the file body, keeps it as the path).
+pub fn tile_bboxes(archive: &str, start: &str, end: &str) -> Result<Vec<(String, [f64; 4])>, String> {
+    let out = tmp("tiles.csv");
+    let out_s = out.to_string_lossy();
+    let sql = format!(
+        "{prelude}COPY (SELECT mgrs, min(lon) AS w, min(lat) AS s, max(lon) AS e, max(lat) AS n \
+         FROM read_parquet('{archive}', hive_partitioning=true) \
+         WHERE date >= '{start}' AND date <= '{end}' GROUP BY mgrs) TO '{out_s}' (FORMAT CSV, HEADER)",
+        prelude = s3_prelude());
+    duckdb(&sql)?;
+    let text = std::fs::read_to_string(&out).map_err(|e| format!("read tiles: {e}"))?;
+    let _ = std::fs::remove_file(&out);
+    let mut v = Vec::new();
+    for line in text.lines().skip(1) {
+        let f: Vec<&str> = line.split(',').collect();
+        if f.len() < 5 || f[0].is_empty() { continue; }
+        v.push((f[0].to_string(), [f[1].parse().unwrap_or(0.0), f[2].parse().unwrap_or(0.0),
+                                   f[3].parse().unwrap_or(0.0), f[4].parse().unwrap_or(0.0)]));
+    }
+    Ok(v)
 }
 
 fn fmt(x: f64) -> String {

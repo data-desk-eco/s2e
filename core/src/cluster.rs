@@ -90,6 +90,23 @@ pub struct Cluster {
     pub detections: Vec<DedupedDet>,
 }
 
+impl Cluster {
+    /// re-attach measured clear-sky persistence and rescore. `n_clear_obs` is the
+    /// number of cloud-free looks at the site (the honest denominator behind
+    /// persistence = n_dates / n_clear_obs); clamped ≥ date_count so persistence ∈
+    /// (0,1]. single-sources the score formula (score_cluster) so the archive path
+    /// matches the fresh-detect path — no second scoring implementation to drift.
+    pub fn set_observations(&mut self, n_clear_obs: usize) {
+        let n = n_clear_obs.max(self.date_count as usize);
+        self.persistence = if n > 0 { Some(self.date_count as f64 / n as f64) } else { None };
+        let sc = score_cluster(self.max_ratio, self.date_count as f64, n as f64, self.min_glint);
+        self.ratio_score = sc.ratio_score;
+        self.persistence_score = sc.persistence_score;
+        self.glint_penalty = sc.glint_penalty;
+        self.total_score = sc.total_score;
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ClusterOptions {
     pub merge_distance: f64,
@@ -441,6 +458,33 @@ mod tests {
         assert!((c.max_ratio.unwrap() - 2.25).abs() < 1e-9);
         assert!(c.total_score > 0.0 && c.total_score <= 0.9);
         assert_eq!(c.likely_glint, Some(false));
+    }
+
+    // set_observations attaches the measured clear-sky denominator and rescores in
+    // step with score_cluster (the archive coverage path == the fresh-detect path).
+    #[test]
+    fn rescore_with_observations() {
+        let mut dets = Vec::new();
+        for m in ["05", "06", "07", "08"] {
+            for d in ["05", "15", "25"] {
+                let mut x = det(&format!("2024-{m}-{d}"), 0.9, 0.4, 70.0);
+                x.b12_b11_ratio = Some(2.25);
+                dets.push(x);
+            }
+        }
+        // no observations supplied → persistence null, persistence_score 0.
+        let mut c = cluster_detections(&dets, &opts())[0].clone();
+        assert_eq!(c.persistence, None);
+        assert_eq!(c.persistence_score, 0.0);
+        // 12 dates over 24 clear looks → persistence 0.5; matches score_cluster directly.
+        c.set_observations(24);
+        assert!((c.persistence.unwrap() - 0.5).abs() < 1e-9);
+        let want = crate::score::score_cluster(c.max_ratio, c.date_count as f64, 24.0, c.min_glint);
+        assert!((c.persistence_score - want.persistence_score).abs() < 1e-9);
+        assert!((c.total_score - want.total_score).abs() < 1e-9);
+        // n_clear_obs clamped ≥ date_count → persistence ≤ 1.
+        c.set_observations(1);
+        assert!((c.persistence.unwrap() - 1.0).abs() < 1e-9);
     }
 
     // score.test.mjs [8] — scoreThreshold drops low-quality clusters

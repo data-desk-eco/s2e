@@ -10,7 +10,7 @@
 
 use gdal::raster::ResampleAlg;
 use gdal::Dataset;
-use s2_flares_core::{detect_block, enumerate_blocks, Block, BlockMeta, Detection, Thresholds, BLOCK_SIZE, BLOCK_OVERLAP};
+use s2_flares_core::{detect_block, enumerate_blocks, cover_sites, Block, BlockMeta, Detection, Site, Thresholds, BLOCK_SIZE, BLOCK_OVERLAP};
 use crate::stac::Item;
 
 pub(crate) const OVERVIEW_FACTOR: usize = 8; // 8× = 160 m screen for 20 m bands
@@ -366,6 +366,21 @@ pub fn make_reader(gpu: bool, bulk: bool, harmonize: bool) -> Result<Box<dyn Sce
     if gpu && !cfg!(feature = "gpu") { return Err("--gpu needs a --features gpu build (CUDA box)".into()); }
     if gpu && !bulk { return Err("--gpu is the bulk full-tile path — use it with --region".into()); }
     Ok(if bulk { Box::new(BulkReader { gpu, harmonize }) } else { Box::new(GdalReader { harmonize }) })
+}
+
+/// sample the SCL band at each site for one scene → (site_id, cloud_frac) for the
+/// in-footprint sites only. the I/O half of the site-anchored clear-sky denominator;
+/// the windowing/classification is `core::cover_sites`. SCL carries no harmonisation
+/// offset (it's a class band), so no per-date shift. one whole-band SCL read per scene
+/// (a single 20 m band) — cheap in-region, the second pass `cover_sites` was built for.
+pub fn cover_scene(item: &Item, sites: &[Site]) -> Vec<(String, f64)> {
+    let url = match &item.bands.scl { Some(u) => u, None => return Vec::new() };
+    let r = match open(url) { Ok(r) => r, Err(_) => return Vec::new() };
+    let scl = match whole::<u8>(&r) { Some(v) => v, None => return Vec::new() };
+    cover_sites(&scl, r.width, r.height, r.bbox, item.epsg, sites).into_iter().map(|c| {
+        let cloudy = c.hist[3] + c.hist[8] + c.hist[9] + c.hist[10]; // shadow + cloud med/high + cirrus
+        (c.h3, cloudy as f64 / c.px_valid as f64)
+    }).collect()
 }
 
 /// the reader seam composed: decode + prescreen (reader) → `core::detect_block` (driver).

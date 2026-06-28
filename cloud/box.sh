@@ -214,10 +214,18 @@ archive(){
   say "Archive $OUT → s3://$BUCKET/{detections (per-tile parquet),coverage (scan footprint)}"
   local b64; b64=$(printf '%s' "$ARCHIVER" | base64 | tr -d '\n')
   sshx "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' OUT='$REPO_DIR/$OUT' bash"
-  say "Cluster view → s3://$BUCKET/clusters/data.parquet"
-  sshx "S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
-        AWS_ACCESS_KEY_ID='$ak' AWS_SECRET_ACCESS_KEY='$sk' \
-        s2-flares cluster --archive 's3://$BUCKET/detections/**/*.parquet' \
+  say "Cluster view (+ site-anchored clear-sky persistence) → s3://$BUCKET/clusters/data.parquet"
+  # one process, two credential sets: gdal /vsis3 reads SCL from eodata (AWS_* from the
+  # per-VM eodata profile, sourced via login env) for the coverage scan, while duckdb
+  # reads detections / writes clusters on the project bucket (S2_S3_* — kept separate
+  # from AWS_* precisely so they don't collide). --coverage-scan samples SCL at each
+  # anchor over every acquisition → real persistence = n_dates/n_clear_obs (resumable
+  # under $OUT/coverage, pulled down with the scene CSVs).
+  sshx "cd $REPO_DIR && . /etc/profile.d/eodata.sh && \
+        S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
+        S2_S3_ACCESS_KEY='$ak' S2_S3_SECRET_KEY='$sk' \
+        ./target/release/s2-flares cluster --source cdse \
+          --archive 's3://$BUCKET/detections/**/*.parquet' --coverage-scan '$OUT/coverage' \
           --out 's3://$BUCKET/clusters/data.parquet' --start '${START:-2015-01-01}' --end '${END:-2100-01-01}'"
 }
 

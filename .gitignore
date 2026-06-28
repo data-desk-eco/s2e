@@ -2,5 +2,7 @@
 data/
 .env
 cloud/.box-ip
+cloud/.box-ip-*
+cloud/.fleet
 out/
 cloud/.box-ip.cpu-backup

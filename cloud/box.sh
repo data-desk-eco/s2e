@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 # CloudFerro WAW3-2 end-to-end orchestration, co-located with the Copernicus
-# `eodata` archive (free in-region JP2 reads). One script, one auth path:
+# `eodata` archive (free in-region JP2 reads). One script, one auth path — and a
+# FLEET by default: bulk runs fan out across FLEET (default 4) VMs in parallel, the
+# AOI sharded one slice per member; a bbox/no-aoi run can't be split so it forces 1.
 #
-#   ./box.sh up                       provision the box (keypair/secgroup/net/VM/IP)
-#   ./box.sh run <detect args>        detached, resumable detection + live progress
-#   ./box.sh pull                     rsync the per-scene CSVs down to $LOCAL_DATA
-#   ./box.sh archive                  roll the CSVs up to s3://$BUCKET/{detections,
-#                                     clusters,coverage} (raw parquet + view + footprint)
-#   ./box.sh verify                   prove every AOI feature scanned + 0 errored scenes
+#   ./box.sh up                       provision the fleet (keypair/secgroup/net/VMs/IPs)
+#   ./box.sh run <detect args>        shard the AOI, detached resumable detect on every member
+#   ./box.sh pull                     rsync every member's per-scene CSVs down to $LOCAL_DATA
+#   ./box.sh archive                  gather all members' CSVs to the head, roll up to
+#                                     s3://$BUCKET/{detections,clusters,coverage}
+#   ./box.sh verify                   prove every AOI feature scanned + 0 errored scenes (per member)
 #   ./box.sh publish                  make that archive a web-map backend: anonymous
 #                                     public-read + CORS, so DuckDB-wasm can read it
 #   ./box.sh wipe                     empty the archive bucket (confirms; FORCE=1 skips)
-#   ./box.sh cost                     estimate run cost so far (uptime × flavor €/h)
-#   ./box.sh down                     scale to zero (delete VM + floating IP)
-#   ./box.sh launch <detect args>     up → run, detached — kick off and walk away
-#                                     (box stays UP; finish later with archive|publish|down)
-#   ./box.sh all <detect args>        up → run → archive → pull → verify → down, hands-off
-#   ./box.sh ssh | ip | watch         interactive login / floating IP / re-attach
+#   ./box.sh cost                     estimate run cost so far (FLEET × uptime × flavor €/h)
+#   ./box.sh down                     scale to zero (delete every VM + floating IP)
+#   ./box.sh launch <detect args>     up → run, detached — kick off the fleet and walk away
+#                                     (boxes stay UP; finish later with archive|publish|down)
+#   ./box.sh all <detect args>        up → run → verify → archive → pull → down, hands-off
+#   ./box.sh ssh [i] | ip | watch     interactive login to member i / floating IPs / re-attach
 #
 # `run`/`pull`/`watch` are ssh-only; `up`/`down`/`archive`/`ip` use the openstack
 # API via the vendored 2fa openrc — non-interactive when a gitignored .env (repo
@@ -34,10 +36,11 @@ cd "$(dirname "$0")"
 # passthrough gpu.* flavors need a quota bump). The cpu path is unchanged (GPU unset).
 if [ "${GPU:-}" = 1 ]; then
   : "${CLOUD_INIT:=cloud-init-gpu.yaml}"; : "${FLAVOR:=vm.l40s.1}"
-  : "${IMAGE:=Ubuntu 22.04 NVIDIA}"; : "${RATE:=0.45}"
+  : "${IMAGE:=Ubuntu 22.04 NVIDIA}"; : "${RATE:=0.45}"; : "${FLEET:=1}"
 fi
 : "${CLOUD_INIT:=cloud-init.yaml}"
-: "${VM:=s2-flares}"
+: "${VM:=s2-flares}"            # base name; fleet members are $VM-0 … $VM-(FLEET-1)
+: "${FLEET:=4}"                 # fleet size for bulk (--aoi) runs; a bbox run forces 1
 : "${FLAVOR:=eo1.large}"
 : "${IMAGE:=Ubuntu 22.04 LTS}"
 : "${KEYPAIR:=s2-flares}"
@@ -54,8 +57,15 @@ fi
 
 SSHOPTS="-o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
 say(){ printf '\033[1;36m→ %s\033[0m\n' "$*"; }
-boxip(){ cat .box-ip 2>/dev/null || { echo "no box — run ./box.sh up" >&2; exit 1; }; }
-sshx(){ ssh $SSHOPTS -i "$KEYFILE" "eouser@$(boxip)" "$@"; }
+# fleet members are $VM-0 … $VM-(FLEET-1), each with its own floating IP in .box-ip-<i>.
+# `run` pins the active member count in .fleet (a bbox run writes 1); every op that
+# post-dates it reads .fleet so the fan-out matches exactly the boxes that ran.
+mvm(){ echo "$VM-$1"; }
+mip(){ cat ".box-ip-$1" 2>/dev/null || { echo "no box $VM-$1 — run ./box.sh up" >&2; exit 1; }; }
+mssh(){ local i=$1; shift; ssh $SSHOPTS -i "$KEYFILE" "eouser@$(mip "$i")" "$@"; }
+fleetn(){ cat .fleet 2>/dev/null || echo "$FLEET"; }
+boxip(){ mip "${1:-0}"; }       # head IP
+sshx(){ mssh 0 "$@"; }          # single-box convenience (parity / head ops)
 # project S3 (EC2) creds for our own buckets — list, minting one if none. "ak sk".
 s3creds(){
   local c; c=$(openstack ec2 credentials list -f json | jq -r '.[0]|"\(.Access) \(.Secret)"' 2>/dev/null || true)
@@ -78,6 +88,9 @@ auth(){
   [ -n "${OS_TOKEN:-}" ] || { echo "auth failed: no keystone token — wrong password/TOTP (check .env), or token-issue rejected" >&2; exit 1; }
 }
 
+# provision shared infra once (keypair/secgroup/network), then boot the FLEET members
+# IN PARALLEL — each first boot is ~5min, so fan-out is the whole point. each member
+# gets a floating IP cached in .box-ip-<i>; an existing member is reused (idempotent).
 up(){
   auth
   say "Keypair $KEYPAIR"
@@ -94,82 +107,98 @@ up(){
     openstack router create "$NET-rtr" >/dev/null
     openstack router set --external-gateway "$EXTNET" "$NET-rtr" >/dev/null
     openstack router add subnet "$NET-rtr" "$NET-sub" >/dev/null; }
-  if openstack server show "$VM" >/dev/null 2>&1; then say "VM $VM already exists"; else
-    say "Booting VM $VM ($FLAVOR) — a few minutes…"
-    openstack server create "$VM" \
-      --flavor "$FLAVOR" --image "$IMAGE" --key-name "$KEYPAIR" --security-group "$SECGROUP" \
-      --nic net-id="$(openstack network show "$NET" -f value -c id)" \
-      --nic net-id="$(openstack network show "$EODATANET" -f value -c id)" \
-      --user-data "$CLOUD_INIT" --wait >/dev/null
-  fi
-  say "Floating IP"
+  local netid eoid; netid=$(openstack network show "$NET" -f value -c id); eoid=$(openstack network show "$EODATANET" -f value -c id)
+  say "Booting fleet of $FLEET ($FLAVOR) in parallel — a few minutes…"
+  local i; for i in $(seq 0 $((FLEET-1))); do boot_member "$i" "$netid" "$eoid" & done; wait
+  printf '\n\033[1;32m✓ provisioned %s members\033[0m  →  ./box.sh ssh [i]   (first boot ~5min: rust / gdal / duckdb / build)\n' "$FLEET"
+}
+# one member: boot (idempotent) + attach a floating IP → .box-ip-<i>. run under `&`.
+boot_member(){
+  local i=$1 netid=$2 eoid=$3 vm; vm=$(mvm "$i")
+  openstack server show "$vm" >/dev/null 2>&1 || openstack server create "$vm" \
+    --flavor "$FLAVOR" --image "$IMAGE" --key-name "$KEYPAIR" --security-group "$SECGROUP" \
+    --nic net-id="$netid" --nic net-id="$eoid" --user-data "$CLOUD_INIT" --wait >/dev/null
   local port fip
-  port=$(openstack port list --server "$VM" --network "$NET" -f value -c id | head -1)
+  port=$(openstack port list --server "$vm" --network "$NET" -f value -c id | head -1)
   fip=$(openstack floating ip list --port "$port" -f value -c "Floating IP Address" | head -1)
-  if [ -z "$fip" ]; then
-    fip=$(openstack floating ip create "$EXTNET" -f value -c floating_ip_address)
-    openstack floating ip set --port "$port" "$fip" >/dev/null
-  fi
-  echo "$fip" > .box-ip
-  printf '\n\033[1;32m✓ provisioned\033[0m  →  ./box.sh ssh   (first boot ~5min: rust / gdal / duckdb / build)\n   ssh -i %s eouser@%s\n' "$KEYFILE" "$fip"
+  [ -n "$fip" ] || { fip=$(openstack floating ip create "$EXTNET" -f value -c floating_ip_address); openstack floating ip set --port "$port" "$fip" >/dev/null; }
+  echo "$fip" > ".box-ip-$i"
+  say "  [$i] $vm @ $fip"
 }
 
 ip(){
-  auth
-  local port
-  port=$(openstack port list --server "$VM" --network "$NET" -f value -c id | head -1)
-  openstack floating ip list --port "$port" -f value -c "Floating IP Address" | head -1 | tee .box-ip
+  auth; local i port
+  for i in $(seq 0 $(($(fleetn)-1))); do
+    port=$(openstack port list --server "$(mvm "$i")" --network "$NET" -f value -c id | head -1)
+    openstack floating ip list --port "$port" -f value -c "Floating IP Address" | head -1 | tee ".box-ip-$i"
+  done
 }
 
-# ephemeral box, recycled floating IPs → skip host-key pinning entirely (see
-# SSHOPTS). `exec` hands the process to ssh so the interactive session doesn't
-# slurp the rest of this script's stdin (which caused a stray syntax error on logout).
-go_ssh(){ exec ssh $SSHOPTS -i "$KEYFILE" "eouser@$(boxip)"; }
+# ephemeral boxes, recycled floating IPs → skip host-key pinning entirely (see
+# SSHOPTS). `exec` hands the process to ssh so the interactive session doesn't slurp
+# the rest of this script's stdin. optional member index (default the head, 0).
+go_ssh(){ exec ssh $SSHOPTS -i "$KEYFILE" "eouser@$(mip "${1:-0}")"; }
 
-# detached + resumable: `s2-flares detect` skips scenes whose CSV already exists, so
-# a dropped connection or a re-run just continues. an --aoi geojson is uploaded
-# transparently. the native cli is rebuilt first (incremental — fast if unchanged)
-# so a git pull takes effect; --source cdse selects the eodata jp2 reader.
+# shard the --aoi across the fleet (round-robin → balanced; a tile two terminals share
+# landing on two boxes is fine — each writes its own <id>/ dir and the rollup dedups),
+# scp each shard to its member, rebuild (git pull → latest detector) and launch the
+# detached resumable detect on every member IN PARALLEL. a bbox/no-aoi run can't be
+# split → one member. .fleet pins how many ran so later ops fan out to match.
 run(){
-  local ip; ip=$(boxip)
-  local a=("$@") args=() i
+  local a=("$@") aoi="" rest=() i
   for ((i=0; i<${#a[@]}; i++)); do
-    if [ "${a[i]}" = "--aoi" ] && [ -f "${a[i+1]:-}" ]; then
-      say "Uploading AOI ${a[i+1]}"
-      scp -q $SSHOPTS -i "$KEYFILE" "${a[i+1]}" "eouser@$ip:$REPO_DIR/_aoi.geojson"
-      args+=(--aoi _aoi.geojson); ((i++))
-    else args+=("${a[i]}"); fi
+    if [ "${a[i]}" = "--aoi" ] && [ -f "${a[i+1]:-}" ]; then aoi="${a[i+1]}"; ((i++))
+    else rest+=("${a[i]}"); fi
   done
-  # gpu box: build with the feature, source the cuda env (nvcc/CUDA_PATH live in
-  # /etc/profile.d/cuda.sh — not on the non-login ssh PATH), and select the gpu reader
-  # at runtime (the --features build only COMPILES it; --gpu picks it) unless already set.
+  local n=$FLEET; [ -n "$aoi" ] || n=1
+  echo "$n" > .fleet
+  [ -n "$aoi" ] && { say "Sharding $aoi across $n members"; shard_aoi "$aoi" "$n"; }
   local feat="" cudaenv=""
-  if [ "${GPU:-}" = 1 ]; then
-    feat=" --features gpu"; cudaenv=". /etc/profile.d/cuda.sh && "
-    [[ " ${args[*]} " == *" --gpu "* ]] || args+=(--gpu)
-  fi
-  say "Build on $ip (incremental)$feat"
-  sshx "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && ${cudaenv}cargo build --release -q -p s2-flares-cli$feat"
-  say "Detection on $ip (detached, resumable) → $REPO_DIR/$OUT"
-  sshx "cd $REPO_DIR && nohup bash -lc './target/release/s2-flares detect --source cdse ${args[*]} --out $OUT' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  started — streaming progress (Ctrl-C is safe, the run continues)'"
+  if [ "${GPU:-}" = 1 ]; then feat=" --features gpu"; cudaenv=". /etc/profile.d/cuda.sh && "
+    [[ " ${rest[*]} " == *" --gpu "* ]] || rest+=(--gpu); fi
+  for i in $(seq 0 $((n-1))); do start_member "$i" "$aoi" "$feat" "$cudaenv" "${rest[@]}" & done; wait
+  say "Fleet detached & resumable — streaming progress (Ctrl-C is safe, the runs continue)"
   watch
 }
+# one member: upload its shard, build, launch the detached detect. run under `&`.
+start_member(){
+  local i=$1 aoi=$2 feat=$3 cudaenv=$4; shift 4; local rest=("$@") ip aoiarg=""; ip=$(mip "$i")
+  if [ -n "$aoi" ]; then
+    scp -q $SSHOPTS -i "$KEYFILE" "/tmp/_shard-$i.geojson" "eouser@$ip:$REPO_DIR/_aoi.geojson"
+    aoiarg="--aoi _aoi.geojson"; fi
+  say "  [$i] build (incremental)$feat"
+  mssh "$i" "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && ${cudaenv}cargo build --release -q -p s2-flares-cli$feat"
+  mssh "$i" "cd $REPO_DIR && nohup bash -lc './target/release/s2-flares detect --source cdse $aoiarg ${rest[*]} --out $OUT' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  [$i] detect started'"
+}
+# round-robin split → /tmp/_shard-<i>.geojson (balanced slices; keeps the cli generic).
+shard_aoi(){ python3 - "$1" "$2" <<'PY'
+import json,sys
+fs=json.load(open(sys.argv[1]))['features']; n=int(sys.argv[2])
+for i in range(n): json.dump({'type':'FeatureCollection','features':fs[i::n]}, open(f'/tmp/_shard-{i}.geojson','w'))
+PY
+}
 
-# stream new detect log lines until the run prints its `done:` summary. unbounded by
-# design — a wide-area run can exceed any fixed cap, and a fixed cap would make `all`
-# fall through to archive/pull/down MID-RUN. we exit only on `done:`, or on the detect
-# binary vanishing (crash) once it has produced output. pgrep -x matches the detect
-# comm `s2-flares`, not this watcher; the n>0 guard avoids the launch race.
+# stream every member's detect log (prefixed [i]) until ALL have printed `done:` — or a
+# member's detect vanished after producing output (a crash). unbounded like the single-
+# box watch: a wide run outlasts any fixed cap, and a cap would let `all` fall through
+# mid-run. one ssh per member per cycle returns the new slice then a 0x1e-prefixed
+# `<lines> <state>` tag (RS never occurs in a log line, so the split is unambiguous).
 watch(){
-  sshx 'log=/tmp/cfrun.log; n=0
-    while :; do
-      [ -f "$log" ] || { sleep 3; continue; }   # run not yet launched — wait, do not leak the input-redirect error
-      t=$(wc -l <"$log" 2>/dev/null || echo 0)
-      [ "$t" -gt "$n" ] && { sed -n "$((n+1)),${t}p" "$log"; n=$t; }
-      grep -q "^done:" "$log" 2>/dev/null && break
-      pgrep -x s2-flares >/dev/null 2>&1 || { [ "$n" -gt 0 ] && { echo "watch: detect exited without done: — see $log"; break; }; }
-      sleep 3
-    done'
+  local n i; n=$(fleetn); local -a seen
+  for i in $(seq 0 $((n-1))); do seen[i]=0; done
+  while :; do
+    local fin=0
+    for i in $(seq 0 $((n-1))); do
+      local out; out=$(mssh "$i" "l=/tmp/cfrun.log; t=\$(wc -l <\$l 2>/dev/null||echo 0); sed -n \"$((seen[i]+1)),\${t}p\" \$l 2>/dev/null; printf '\036%s %s' \$t \"\$(grep -q '^done:' \$l 2>/dev/null && echo D || { pgrep -x s2-flares >/dev/null 2>&1 || echo X; })\"" 2>/dev/null) || { fin=$((fin+1)); continue; }
+      local body=${out%$'\036'*} t st; read -r t st <<<"${out##*$'\036'}"
+      [[ "$t" =~ ^[0-9]+$ ]] || t=${seen[i]}
+      [ -n "$body" ] && printf '%s\n' "$body" | sed "s/^/[$i] /"
+      seen[i]=$t
+      { [ "$st" = D ] || { [ "$st" = X ] && [ "$t" -gt 0 ]; }; } && fin=$((fin+1))
+    done
+    [ "$fin" -ge "$n" ] && break
+    sleep 3
+  done
 }
 
 # the gpu↔cpu parity gate (gpu box only): assert nvJPEG2000 detections == GDAL/OpenJPEG
@@ -177,54 +206,56 @@ watch(){
 # PARITY_TILE/START/END narrow it. lossless JP2 → identical pixels → identical core output.
 parity(){
   : "${PARITY_BBOX:?set PARITY_BBOX=W,S,E,N (a small test region)}"
-  local ip; ip=$(boxip)
-  say "Parity gpu-vs-cpu on $ip"
+  say "Parity gpu-vs-cpu on head"
   sshx "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && . /etc/profile.d/cuda.sh && . /etc/profile.d/eodata.sh && \
     S2_PARITY_BBOX='$PARITY_BBOX' ${PARITY_TILE:+S2_PARITY_TILE='$PARITY_TILE'} ${START:+S2_PARITY_START='$START'} ${END:+S2_PARITY_END='$END'} \
     cargo test --release -p s2-flares-cli --features gpu parity -- --ignored --nocapture"
 }
 
 pull(){
-  local ip; ip=$(boxip); mkdir -p "$LOCAL_DATA"
-  say "Pull $REPO_DIR/$OUT → $LOCAL_DATA"
-  rsync -az -e "ssh $SSHOPTS -i $KEYFILE" "eouser@$ip:$REPO_DIR/$OUT/" "$LOCAL_DATA/"
+  local n i; n=$(fleetn); mkdir -p "$LOCAL_DATA"
+  for i in $(seq 0 $((n-1))); do
+    say "Pull $(mvm "$i"):$OUT → $LOCAL_DATA"
+    rsync -az -e "ssh $SSHOPTS -i $KEYFILE" "eouser@$(mip "$i"):$REPO_DIR/$OUT/" "$LOCAL_DATA/" &
+  done; wait
   echo "  $(find "$LOCAL_DATA" -name '*.csv' | wc -l | tr -d ' ') scene CSVs in $LOCAL_DATA"
 }
 
 # roll the per-scene CSVs up into BOTH published artifacts in one pass:
 #   detections/  the raw archive — hive parquet s3://$BUCKET/detections/mgrs=…/
 #                data.parquet, ONE deterministic-key parquet PER TILE (not per scene).
-#                resumability is the per-scene CSV layer (presence==done), so the
-#                parquet rollup is free to coarsen — per-tile gives ~10²-not-10⁴
-#                objects of a useful size, far fewer footer reads for bulk scans and
-#                the web map's range requests. each tile file is SELECT DISTINCT over
-#                every AOI's CSVs for that tile (cross-AOI detections union + dedup —
-#                the AOI-agnostic data model — vs the old per-scene last-write-wins),
-#                ORDER BY date so row-group date stats prune within a file.
+#                each tile file is SELECT DISTINCT over every AOI's CSVs for that tile
+#                (cross-AOI/cross-shard union + dedup), ORDER BY date so row-group date
+#                stats prune within a file.
 #   clusters/    the derived VIEW — s2-flares cluster over the fresh detections/ →
-#                clusters/data.parquet (one row/cluster + nested detections list).
-#                co-produced here, not in a separate run; the web map still re-clusters
-#                live in wasm for arbitrary windows. clustered full-window (START/END).
-#   coverage/    the scan FOOTPRINT — coverage/data.parquet, one row per (tile,
-#                quarter) processed + its detection bbox. lets the web map gate its
-#                in-browser "Detect" to archive gaps. co-produced in the same pass.
-# duckdb (rollup) + the cli (cluster) both run on the box, in-region; mgrs lives in the
-# detections path (EXCLUDEd), date stays a column; project S3 creds from openstack ec2.
+#                clusters/data.parquet (one row/cluster + nested detections list). the
+#                web map still re-clusters live in wasm for arbitrary windows.
+#   coverage/    the scan FOOTPRINT — coverage/data.parquet, one row per (tile, quarter)
+#                processed + its detection bbox, gating the web map's "Detect" button.
+# FLEET note: each worker holds only its shard's CSVs, so we first GATHER every member's
+# CSVs onto the head (member 0) — a single rollup there sees the whole archive at once,
+# giving a clean per-tile DISTINCT (no cross-box last-write-wins when adjacent terminals
+# share a tile) AND a complete coverage footprint. then duckdb (rollup) + the cli
+# (cluster, with the site-anchored clear-sky persistence scan) both run on the head,
+# in-region, carrying TWO credential sets: gdal /vsis3 reads SCL from eodata (AWS_* from
+# the per-VM profile) for the coverage scan, while duckdb reads detections / writes
+# clusters on the project bucket (S2_S3_* — kept separate so they don't collide).
 archive(){
   auth
   openstack container show "$BUCKET" >/dev/null 2>&1 || { say "Bucket $BUCKET"; openstack container create "$BUCKET" >/dev/null; }
   local ak sk; read -r ak sk < <(s3creds)
+  local n i; n=$(fleetn)
+  # gather workers' CSVs → head. tar piped through the local host (workers can't ssh
+  # each other; CSVs are tiny so this is cheap). different <id>/ dirs → no collision.
+  for ((i=1; i<n; i++)); do
+    say "Gather $(mvm "$i") CSVs → head"
+    mssh "$i" "cd $REPO_DIR/$OUT 2>/dev/null && tar cf - . || true" | mssh 0 "mkdir -p $REPO_DIR/$OUT && tar xf - -C $REPO_DIR/$OUT"
+  done
   say "Archive $OUT → s3://$BUCKET/{detections (per-tile parquet),coverage (scan footprint)}"
   local b64; b64=$(printf '%s' "$ARCHIVER" | base64 | tr -d '\n')
-  sshx "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' OUT='$REPO_DIR/$OUT' bash"
+  mssh 0 "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' OUT='$REPO_DIR/$OUT' bash"
   say "Cluster view (+ site-anchored clear-sky persistence) → s3://$BUCKET/clusters/data.parquet"
-  # one process, two credential sets: gdal /vsis3 reads SCL from eodata (AWS_* from the
-  # per-VM eodata profile, sourced via login env) for the coverage scan, while duckdb
-  # reads detections / writes clusters on the project bucket (S2_S3_* — kept separate
-  # from AWS_* precisely so they don't collide). --coverage-scan samples SCL at each
-  # anchor over every acquisition → real persistence = n_dates/n_clear_obs (resumable
-  # under $OUT/coverage, pulled down with the scene CSVs).
-  sshx "cd $REPO_DIR && . /etc/profile.d/eodata.sh && \
+  mssh 0 "cd $REPO_DIR && . /etc/profile.d/eodata.sh && \
         S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
         S2_S3_ACCESS_KEY='$ak' S2_S3_SECRET_KEY='$sk' \
         ./target/release/s2-flares cluster --source cdse \
@@ -232,7 +263,7 @@ archive(){
           --out 's3://$BUCKET/clusters/data.parquet' --start '${START:-2015-01-01}' --end '${END:-2100-01-01}'"
 }
 
-# runs on the box: one COPY per tile (union of all that tile's non-empty scene CSVs)
+# runs on the head: one COPY per tile (union of all that tile's non-empty scene CSVs)
 # to its deterministic S3 key, then a read-back tally. heredoc'd so box.sh stays one file.
 ARCHIVER=$(cat <<'EOS'
 set -euo pipefail
@@ -299,51 +330,55 @@ wipe(){
   echo "  bucket emptied."
 }
 
-# run cost, instantly: CloudFerro bills the flavor by the hour, so uptime × RATE is
-# a deterministic local estimate — the billing portal aggregates daily, far too
-# coarse/slow to reflect a run in flight. assumes auth; `cost` wraps it with auth.
+# run cost, instantly: CloudFerro bills the flavor by the hour, so FLEET × uptime ×
+# RATE is a deterministic local estimate — the billing portal aggregates daily, far
+# too coarse/slow to reflect a run in flight. assumes auth; `cost` wraps it with auth.
 costline(){
-  local t; t=$(openstack server show "$VM" -f value -c created 2>/dev/null) || return 1
+  local t; t=$(openstack server show "$(mvm 0)" -f value -c created 2>/dev/null) || return 1
   t=${t%Z}; t=${t%.*}; t=$(date -ju -f "%Y-%m-%dT%H:%M:%S" "$t" +%s 2>/dev/null || date -u -d "$t" +%s)
-  local h; h=$(echo "scale=2;($(date -u +%s)-$t)/3600" | bc)
-  printf '\033[1;36m→ %s up %sh × €%s/h ≈ €%s\033[0m\n' "$FLAVOR" "$h" "$RATE" "$(echo "scale=2;$h*$RATE"|bc)"
+  local h n; n=$(fleetn); h=$(echo "scale=2;($(date -u +%s)-$t)/3600" | bc)
+  printf '\033[1;36m→ %s× %s up %sh × €%s/h ≈ €%s\033[0m\n' "$n" "$FLAVOR" "$h" "$RATE" "$(echo "scale=2;$n*$h*$RATE"|bc)"
 }
-cost(){ auth; costline || echo "no VM $VM" >&2; }
+cost(){ auth; costline || echo "no fleet $VM-*" >&2; }
 
+# delete every member VM + its floating IP, in parallel. costline first (best-effort).
 down(){
-  auth
-  costline || true
-  local port fip=""
-  port=$(openstack port list --server "$VM" --network "$NET" -f value -c id 2>/dev/null | head -1 || true)
+  auth; costline || true
+  local n i; n=$(fleetn)
+  for i in $(seq 0 $((n-1))); do down_member "$i" & done; wait
+  rm -f .box-ip-* .fleet
+  printf '\n\033[1;32m✓ scaled to zero (%s members)\033[0m\n' "$n"
+}
+down_member(){
+  local i=$1 vm port fip=""; vm=$(mvm "$i")
+  port=$(openstack port list --server "$vm" --network "$NET" -f value -c id 2>/dev/null | head -1 || true)
   [ -n "$port" ] && fip=$(openstack floating ip list --port "$port" -f value -c "Floating IP Address" | head -1 || true)
-  say "Deleting VM $VM"
-  openstack server delete "$VM" --wait >/dev/null 2>&1 && echo "  deleted" || echo "  no VM $VM"
-  [ -n "$fip" ] && { say "Releasing floating IP $fip"; openstack floating ip delete "$fip" >/dev/null 2>&1 || true; }
-  rm -f .box-ip
-  printf '\n\033[1;32m✓ scaled to zero\033[0m\n'
+  openstack server delete "$vm" --wait >/dev/null 2>&1 && say "  [$i] $vm deleted" || say "  [$i] no VM $vm"
+  [ -n "$fip" ] && { openstack floating ip delete "$fip" >/dev/null 2>&1 || true; }
 }
 
-# PROVE a run is complete and clean, BEFORE scaling to zero — two assertions over the
-# box's OUT, both born of the run that silently hid 25 of 81 LNG terminals (das island
-# among them) from the published archive:
-#   1. coverage — every AOI feature was reached. detect writes OUT/<id>/<mgrs>_<date>
-#      .csv (header-only even when flareless), so a feature with NO subdir == never
-#      scanned (STAC empty, a lost batch, the box downed pre-archive). id precedence
-#      mirrors load_aois() in main.rs.
+# PROVE a run is complete and clean, per member, BEFORE the gather/archive — two
+# assertions over each box's OUT (born of the run that silently hid 25 of 81 LNG
+# terminals from the published archive):
+#   1. coverage — every AOI feature in this member's shard was reached. detect writes
+#      OUT/<id>/<mgrs>_<date>.csv (header-only even when flareless), so a feature with
+#      NO subdir == never scanned. id precedence mirrors load_aois() in main.rs.
 #   2. no errors — every attempted scene succeeded. a read/detect FAIL leaves a sibling
-#      <mgrs>_<date>.err (cleared on a later successful retry), so ANY remaining .err
-#      means a scene is unproven. a lone .err retries on the next resume, so the path to
-#      green is just: re-run (resumable) until verify is clean.
-# lists every gap/error and exits nonzero; `all` gates `down` on it so a partial-or-
-# errored run keeps the box (and its CSVs) alive for a resumable re-run, never lost.
+#      <mgrs>_<date>.err (cleared on a later successful retry); ANY remaining .err means
+#      a scene is unproven. the path to green is just: re-run (resumable) until clean.
+# verifies each member against its OWN shard (_aoi.geojson); summed, that is the whole
+# AOI. exits nonzero if any member has a gap/error; `all` gates the teardown on it.
 verify(){
-  sshx "cd $REPO_DIR && OUT='$OUT' python3 - <<'PY'
+  local n i rc=0; n=$(fleetn)
+  for i in $(seq 0 $((n-1))); do
+    say "Verify $(mvm "$i")"
+    mssh "$i" "cd $REPO_DIR && OUT='$OUT' python3 - <<'PY'
 import json,os,glob,sys
 out=os.environ['OUT']
 errs=sorted(glob.glob(os.path.join(out,'*','*.err'))) if os.path.isdir(out) else []
 if not os.path.exists('_aoi.geojson'):
-    print(f'verify: no _aoi.geojson (bbox/region run) — {len(errs)} errored scenes')
-    for e in errs: print('  errored:',e)
+    print(f'  no _aoi.geojson (bbox/region run) — {len(errs)} errored scenes')
+    for e in errs: print('    errored:',e)
     sys.exit(1 if errs else 0)
 def fid(i,f):
     p=f.get('properties',{}) or {}
@@ -353,31 +388,33 @@ def fid(i,f):
 ids=[fid(i,f) for i,f in enumerate(json.load(open('_aoi.geojson')).get('features',[]))]
 scanned={d for d in (os.listdir(out) if os.path.isdir(out) else []) if glob.glob(os.path.join(out,d,'*.csv'))}
 gaps=[i for i in ids if i not in scanned]
-print(f'verify: {len(ids)-len(gaps)}/{len(ids)} AOI features scanned, {len(gaps)} unscanned, {len(errs)} errored scenes')
-for g in gaps: print('  unscanned:',g)
-for e in errs: print('  errored:',e)
+print(f'  {len(ids)-len(gaps)}/{len(ids)} shard features scanned, {len(gaps)} unscanned, {len(errs)} errored scenes')
+for g in gaps: print('    unscanned:',g)
+for e in errs: print('    errored:',e)
 sys.exit(1 if (gaps or errs) else 0)
-PY"
+PY" || rc=1
+  done
+  return $rc
 }
 
-# combined kick-off — provision the box AND start the detached, resumable detection
-# in one command, then leave the box UP. our most common entrypoint: fire a run over
-# a few terminals and come back later to archive|publish|down. unlike `all` it does
-# NOT archive/scale-to-zero — `run` already detaches on the box (nohup), so the local
-# watch streaming is severable (Ctrl-C / close the session) without stopping the run.
+# combined kick-off — provision the fleet AND start the detached, sharded detection in
+# one command, then leave the boxes UP. our most common entrypoint: fire a run over a
+# few terminals and come back later to archive|publish|down. unlike `all` it does NOT
+# archive/scale-to-zero — `run` already detaches per box (nohup), so the local watch
+# streaming is severable (Ctrl-C / close the session) without stopping the runs.
 launch(){ up; run "$@"; }
 
-# hands-off pipeline: provision, detect, archive to object storage, pull locally,
-# reconcile, scale to zero. the archive (S3) and the local CSVs persist; only the box
-# is ephemeral. `down` fires only when `verify` proves every AOI feature was scanned —
-# a gap keeps the box up so the run can be resumed and re-archived, never lost.
-all(){ up; run "$@"; archive; pull
-  if verify; then down
-  else say "verify found unscanned AOI features — box kept up. re-run (resumable), re-archive, then ./box.sh down"; fi; }
+# hands-off pipeline: provision the fleet, detect (sharded), prove it, archive to object
+# storage (gather + coverage), pull locally, scale to zero. the archive (S3) and local
+# CSVs persist; only the boxes are ephemeral. `down` fires only when `verify` proves
+# every AOI feature was scanned — a gap keeps the fleet up for a resumable re-run.
+all(){ up; run "$@"
+  if verify; then archive; pull; down
+  else say "verify found unscanned AOI features — fleet kept up. re-run (resumable), then ./box.sh archive && ./box.sh down"; fi; }
 
 case "${1:-}" in
-  up) up;; ip) ip;; ssh) go_ssh;; cost) cost;; down) down;;
+  up) up;; ip) ip;; ssh) shift; go_ssh "${1:-0}";; cost) cost;; down) down;;
   run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; wipe) wipe;; parity) parity;;
   launch) shift; launch "$@";; all) shift; all "$@";;
-  *) echo "usage: $0 {up | run <detect args> | launch <detect args> | watch | pull | archive | verify | publish | wipe | parity | cost | down | all <detect args> | ssh | ip}  (GPU=1 → gpu box)" >&2; exit 1;;
+  *) echo "usage: $0 {up | run <args> | launch <args> | watch | pull | archive | verify | publish | wipe | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
 esac

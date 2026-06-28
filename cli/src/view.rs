@@ -56,14 +56,16 @@ pub fn read_archive(archive: &str, bbox: Option<[f64; 4]>, start: &str, end: &st
     if let Some([w, s, e, n]) = bbox {
         wheres.push(format!("lon >= {w} AND lon <= {e} AND lat >= {s} AND lat <= {n}"));
     }
-    // `radiance` is newer than `pixels`/`warm_size` — a pre-fix archive lacks it.
-    // the false-filtered template declares the column so union_by_name backfills NULL
-    // (→ 0) for legacy rows instead of duckdb erroring on a missing column. (legacy
-    // `pixels` is still the old flooded count, though — re-detect for a clean volume.)
+    // hive_partitioning exposes the detections' `mgrs` path key so each cluster can
+    // inherit its anchor's tile → the view partitions by mgrs like the archive.
+    // `radiance` is newer than `pixels`/`warm_size` — a pre-fix archive lacks it, so the
+    // false-filtered template declares the column and union_by_name backfills NULL (→ 0)
+    // for legacy rows instead of duckdb erroring. (legacy `pixels` is still the old
+    // flooded count, though — re-detect for a clean volume.)
     let sql = format!(
         "{prelude}\
-         COPY (SELECT lon, lat, date, max_b12, max_b11, b12_b11_ratio, pixels, sun_elevation, sun_azimuth, glint_score, radiance \
-         FROM (SELECT * FROM read_parquet('{archive}', union_by_name=true) \
+         COPY (SELECT lon, lat, date, mgrs, max_b12, max_b11, b12_b11_ratio, pixels, sun_elevation, sun_azimuth, glint_score, radiance \
+         FROM (SELECT * FROM read_parquet('{archive}', union_by_name=true, hive_partitioning=true) \
                UNION ALL BY NAME SELECT NULL::DOUBLE AS radiance WHERE false) WHERE {wheres}) \
          TO '{out_s}' (FORMAT CSV, HEADER)",
         prelude = s3_prelude(), wheres = wheres.join(" AND ")
@@ -75,19 +77,20 @@ pub fn read_archive(archive: &str, bbox: Option<[f64; 4]>, start: &str, end: &st
     let mut dets = Vec::new();
     for line in text.lines().skip(1) {
         let f: Vec<&str> = line.split(',').collect();
-        if f.len() < 11 { continue; }
+        if f.len() < 12 { continue; }
         dets.push(Detection {
             lon: f[0].parse().unwrap_or(0.0),
             lat: f[1].parse().unwrap_or(0.0),
             date: f[2].to_string(),
-            max_b12: f[3].parse().unwrap_or(0.0),
-            peak_b11: opt_f64(f[4]),
-            b12_b11_ratio: opt_f64(f[5]),
-            pixels: f[6].parse().unwrap_or(0),
-            sun_elevation: opt_f64(f[7]),
-            sun_azimuth: opt_f64(f[8]),
-            glint_score: opt_f64(f[9]),
-            radiance: f[10].parse().unwrap_or(0.0),
+            mgrs: f[3].to_string(),
+            max_b12: f[4].parse().unwrap_or(0.0),
+            peak_b11: opt_f64(f[5]),
+            b12_b11_ratio: opt_f64(f[6]),
+            pixels: f[7].parse().unwrap_or(0),
+            sun_elevation: opt_f64(f[8]),
+            sun_azimuth: opt_f64(f[9]),
+            glint_score: opt_f64(f[10]),
+            radiance: f[11].parse().unwrap_or(0.0),
             ..Default::default()
         });
     }
@@ -146,14 +149,14 @@ fn fmt(x: f64) -> String {
 fn fo(x: Option<f64>) -> String { x.map(fmt).unwrap_or_default() }
 fn fb(x: Option<bool>) -> String { x.map(|b| b.to_string()).unwrap_or_default() }
 
-const MEMBER_HEADER: &str = "cluster_id,cluster_lon,cluster_lat,cluster_max_b12,cluster_avg_b12,cluster_radiance,detection_count,date_count,first_date,last_date,persistence,seasonal,median_b12_b11_ratio,min_sun_elevation,likely_glint,ratio_score,persistence_score,glint_penalty,total_score,max_ratio,min_glint,glint_suspect,date,m_max_b12,peak_b11,pixels,radiance,sun_elevation,sun_azimuth,m_lon,m_lat";
+const MEMBER_HEADER: &str = "cluster_id,mgrs,cluster_lon,cluster_lat,cluster_max_b12,cluster_avg_b12,cluster_radiance,detection_count,date_count,first_date,last_date,persistence,seasonal,median_b12_b11_ratio,min_sun_elevation,likely_glint,ratio_score,persistence_score,glint_penalty,total_score,max_ratio,min_glint,glint_suspect,date,m_max_b12,peak_b11,pixels,radiance,sun_elevation,sun_azimuth,m_lon,m_lat";
 
 // one flat row per (cluster, member detection) — duckdb renests the member fields.
 fn member_rows(clusters: &[Cluster]) -> String {
     let mut lines = vec![MEMBER_HEADER.to_string()];
     for c in clusters {
         let head = [
-            c.id.clone(), fmt(c.lon), fmt(c.lat), fmt(c.max_b12), fmt(c.avg_b12), fmt(c.radiance),
+            c.id.clone(), c.mgrs.clone(), fmt(c.lon), fmt(c.lat), fmt(c.max_b12), fmt(c.avg_b12), fmt(c.radiance),
             c.detection_count.to_string(), c.date_count.to_string(), c.first_date.clone(), c.last_date.clone(),
             fo(c.persistence), c.seasonal.to_string(), fo(c.median_b12_b11_ratio), fo(c.min_sun_elevation),
             fb(c.likely_glint), fmt(c.ratio_score), fmt(c.persistence_score), fmt(c.glint_penalty),
@@ -179,7 +182,7 @@ pub fn write_view(clusters: &[Cluster], out: &str) -> Result<(), String> {
     // explicit column types → the view's parquet schema is invariant, regardless of
     // whether a run's values happen to be integer-valued (else duckdb infers bigint
     // for one file, double for the next, and a union over the prefix conflicts).
-    let cols = "{'cluster_id':'VARCHAR','cluster_lon':'DOUBLE','cluster_lat':'DOUBLE',\
+    let cols = "{'cluster_id':'VARCHAR','mgrs':'VARCHAR','cluster_lon':'DOUBLE','cluster_lat':'DOUBLE',\
         'cluster_max_b12':'DOUBLE','cluster_avg_b12':'DOUBLE','cluster_radiance':'DOUBLE','detection_count':'INTEGER',\
         'date_count':'INTEGER','first_date':'DATE','last_date':'DATE','persistence':'DOUBLE',\
         'seasonal':'BOOLEAN','median_b12_b11_ratio':'DOUBLE','min_sun_elevation':'DOUBLE',\
@@ -188,10 +191,15 @@ pub fn write_view(clusters: &[Cluster], out: &str) -> Result<(), String> {
         'glint_suspect':'BOOLEAN','date':'DATE','m_max_b12':'DOUBLE','peak_b11':'DOUBLE',\
         'pixels':'INTEGER','radiance':'DOUBLE','sun_elevation':'DOUBLE','sun_azimuth':'DOUBLE','m_lon':'DOUBLE','m_lat':'DOUBLE'}";
     // group members back into one row per cluster with a nested `detections` list.
+    // a clusters/ dir or s3 prefix (anything not ending .parquet) → partition by mgrs,
+    // mirroring detections/ (mgrs=…/data_0.parquet); a plain .parquet stays one file
+    // with mgrs as a body column. OVERWRITE keeps re-archiving idempotent per tile.
+    let part = if out.ends_with(".parquet") { String::new() }
+        else { ", PARTITION_BY (mgrs), OVERWRITE".to_string() };
     let prelude = s3_prelude();
     let sql = format!(
         "{prelude}\
-         COPY (SELECT cluster_id AS id, \
+         COPY (SELECT cluster_id AS id, any_value(mgrs) AS mgrs, \
            any_value(cluster_lon) AS lon, any_value(cluster_lat) AS lat, \
            any_value(cluster_max_b12) AS max_b12, any_value(cluster_avg_b12) AS avg_b12, \
            any_value(cluster_radiance) AS radiance, \
@@ -206,7 +214,7 @@ pub fn write_view(clusters: &[Cluster], out: &str) -> Result<(), String> {
            list(struct_pack(date := date, max_b12 := m_max_b12, peak_b11 := peak_b11, pixels := pixels, radiance := radiance, \
              sun_elevation := sun_elevation, sun_azimuth := sun_azimuth, lon := m_lon, lat := m_lat) ORDER BY date) AS detections \
          FROM read_csv('{m}', header=true, nullstr='', columns={cols}) GROUP BY cluster_id) \
-         TO '{out}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+         TO '{out}' (FORMAT PARQUET, COMPRESSION ZSTD{part})"
     );
     let r = duckdb(&sql);
     let _ = std::fs::remove_file(&members);

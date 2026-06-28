@@ -68,6 +68,9 @@ pub struct DedupedDet {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Cluster {
     pub id: String,
+    /// anchor detection's mgrs tile — the view's partition key (clusters/mgrs=…/),
+    /// mirroring the detection archive. a cluster lives in one tile (its anchor's).
+    pub mgrs: String,
     pub lon: f64,
     pub lat: f64,
     pub max_b12: f64,
@@ -245,6 +248,7 @@ pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Ve
             let (median, min_sun, likely) = glint_metrics(&dets);
             clusters.push(Cluster {
                 id: cluster_hash(det.lat, det.lon),
+                mgrs: det.mgrs.clone(),
                 lon: det.lon,
                 lat: det.lat,
                 max_b12: det.max_b12,
@@ -359,6 +363,7 @@ pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Ve
 
         result.push(Cluster {
             id: cluster_hash(anchor.lat, anchor.lon),
+            mgrs: anchor.mgrs.clone(),
             lon: anchor.lon,
             lat: anchor.lat,
             max_b12: anchor.max_b12,

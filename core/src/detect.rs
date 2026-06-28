@@ -299,15 +299,24 @@ pub fn detect_block(
         None => (None, None),
     };
 
+    // one pass to accumulate per-label peak/sum/count, instead of rescanning the whole
+    // block once per component (was O(components·n)). i ascending + strict `>` keeps the
+    // same lowest-index peak tie-break the per-label scan had → byte-identical detections.
+    let lc = count as usize + 1;
+    let (mut counts, mut sums) = (vec![0u32; lc], vec![0f64; lc]);
+    let (mut peaks, mut peak_idxs) = (vec![f64::NEG_INFINITY; lc], vec![usize::MAX; lc]);
+    for i in 0..n {
+        let l = labels[i] as usize;
+        if l == 0 { continue; }
+        counts[l] += 1;
+        sums[l] += b12[i];
+        if b12[i] > peaks[l] { peaks[l] = b12[i]; peak_idxs[l] = i; }
+    }
+
     let mut detections = Vec::new();
     for label_id in 1..=count {
-        let (mut n_pixels, mut peak_b12, mut peak_idx, mut sum_b12) = (0u32, f64::NEG_INFINITY, usize::MAX, 0f64);
-        for i in 0..n {
-            if labels[i] != label_id { continue; }
-            n_pixels += 1;
-            sum_b12 += b12[i];
-            if b12[i] > peak_b12 { peak_b12 = b12[i]; peak_idx = i; }
-        }
+        let l = label_id as usize;
+        let (n_pixels, peak_b12, peak_idx, sum_b12) = (counts[l], peaks[l], peak_idxs[l], sums[l]);
 
         // --- tunable morphological gates (LOOSE neutralises all of these) ---
         let np = n_pixels as f64;

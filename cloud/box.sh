@@ -152,14 +152,19 @@ run(){
   watch
 }
 
-# stream new detect log lines until the run prints its `done:` summary.
+# stream new detect log lines until the run prints its `done:` summary. unbounded by
+# design — a wide-area run can exceed any fixed cap, and a fixed cap would make `all`
+# fall through to archive/pull/down MID-RUN. we exit only on `done:`, or on the detect
+# binary vanishing (crash) once it has produced output. pgrep -x matches the detect
+# comm `s2-flares`, not this watcher; the n>0 guard avoids the launch race.
 watch(){
   sshx 'log=/tmp/cfrun.log; n=0
-    for _ in $(seq 1 2400); do
+    while :; do
       [ -f "$log" ] || { sleep 3; continue; }   # run not yet launched — wait, do not leak the input-redirect error
       t=$(wc -l <"$log" 2>/dev/null || echo 0)
       [ "$t" -gt "$n" ] && { sed -n "$((n+1)),${t}p" "$log"; n=$t; }
       grep -q "^done:" "$log" 2>/dev/null && break
+      pgrep -x s2-flares >/dev/null 2>&1 || { [ "$n" -gt 0 ] && { echo "watch: detect exited without done: — see $log"; break; }; }
       sleep 3
     done'
 }

@@ -78,20 +78,12 @@ pub fn configure() {
     }
 }
 
-// CloudFerro mounts the eodata archive as a POSIX fs at /eodata (s3fs); the mount root
-// existing is our signal it's an in-region box. checked once — a stat per band open is
-// wasteful and the mount doesn't appear mid-run.
-static EODATA_MOUNT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-fn eodata_mounted() -> bool { *EODATA_MOUNT.get_or_init(|| std::path::Path::new("/eodata/Sentinel-2").is_dir()) }
-
-// s3://eodata/… → /eodata/… when the in-region s3fs mount is present (a local file open
-// sidesteps the /vsis3 curl path and its transient throttling NULLs); otherwise
-// s3://… → /vsis3/… . http(s):// → /vsicurl/… ; /vsi* and local paths pass through.
+// s3://… → /vsis3/… ; http(s):// → /vsicurl/… ; /vsi* and local paths pass through.
+// (the /eodata s3fs mount was tried and is unreliable for this many-open access pattern
+// — 0/12 vs /vsis3's 12/12 sequentially — so eodata stays on /vsis3, hardened by the
+// GDAL HTTP retries above + the open() retry below.)
 pub(crate) fn to_vsi(href: &str) -> String {
-    if let Some(r) = href.strip_prefix("s3://") {
-        if let Some(p) = r.strip_prefix("eodata/") { if eodata_mounted() { return format!("/eodata/{p}"); } }
-        format!("/vsis3/{r}")
-    }
+    if let Some(r) = href.strip_prefix("s3://") { format!("/vsis3/{r}") }
     else if href.starts_with("http://") || href.starts_with("https://") { format!("/vsicurl/{href}") }
     else { href.to_string() }
 }
@@ -106,7 +98,17 @@ pub(crate) struct Raster {
 }
 
 pub(crate) fn open(href: &str) -> Result<Raster, String> {
-    let ds = Dataset::open(to_vsi(href)).map_err(|e| format!("open {href}: {e}"))?;
+    // retry the open with backoff — a transient eodata throttle returns a NULL dataset
+    // (GDAL's own GDAL_HTTP_MAX_RETRY doesn't catch every curl-level failure), and a
+    // single hiccup must not fail a whole scene. ~0.4/0.8/1.6s between four attempts.
+    let path = to_vsi(href);
+    let mut ds = Dataset::open(&path);
+    for attempt in 1..4 {
+        if ds.is_ok() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(200u64 << attempt));
+        ds = Dataset::open(&path);
+    }
+    let ds = ds.map_err(|e| format!("open {href}: {e}"))?;
     let gt = ds.geo_transform().map_err(|e| format!("geotransform: {e}"))?;
     let (width, height) = ds.raster_size();
     let (res_x, res_y, min_x, max_y) = (gt[1], -gt[5], gt[0], gt[3]);

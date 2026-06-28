@@ -13,6 +13,8 @@
 #   ./box.sh wipe                     empty the archive bucket (confirms; FORCE=1 skips)
 #   ./box.sh cost                     estimate run cost so far (uptime × flavor €/h)
 #   ./box.sh down                     scale to zero (delete VM + floating IP)
+#   ./box.sh launch <detect args>     up → run, detached — kick off and walk away
+#                                     (box stays UP; finish later with archive|publish|down)
 #   ./box.sh all <detect args>        up → run → archive → pull → verify → down, hands-off
 #   ./box.sh ssh | ip | watch         interactive login / floating IP / re-attach
 #
@@ -358,6 +360,13 @@ sys.exit(1 if (gaps or errs) else 0)
 PY"
 }
 
+# combined kick-off — provision the box AND start the detached, resumable detection
+# in one command, then leave the box UP. our most common entrypoint: fire a run over
+# a few terminals and come back later to archive|publish|down. unlike `all` it does
+# NOT archive/scale-to-zero — `run` already detaches on the box (nohup), so the local
+# watch streaming is severable (Ctrl-C / close the session) without stopping the run.
+launch(){ up; run "$@"; }
+
 # hands-off pipeline: provision, detect, archive to object storage, pull locally,
 # reconcile, scale to zero. the archive (S3) and the local CSVs persist; only the box
 # is ephemeral. `down` fires only when `verify` proves every AOI feature was scanned —
@@ -369,6 +378,6 @@ all(){ up; run "$@"; archive; pull
 case "${1:-}" in
   up) up;; ip) ip;; ssh) go_ssh;; cost) cost;; down) down;;
   run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; wipe) wipe;; parity) parity;;
-  all) shift; all "$@";;
-  *) echo "usage: $0 {up | run <detect args> | watch | pull | archive | verify | publish | wipe | parity | cost | down | all <detect args> | ssh | ip}  (GPU=1 → gpu box)" >&2; exit 1;;
+  launch) shift; launch "$@";; all) shift; all "$@";;
+  *) echo "usage: $0 {up | run <detect args> | launch <detect args> | watch | pull | archive | verify | publish | wipe | parity | cost | down | all <detect args> | ssh | ip}  (GPU=1 → gpu box)" >&2; exit 1;;
 esac

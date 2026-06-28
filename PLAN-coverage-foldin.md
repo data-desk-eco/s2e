@@ -1,11 +1,13 @@
-# fold the clear-sky persistence denominator into the detection pass
+# fold the clear-sky denominator into detection — as a spatial cloud mask
 
 a handoff plan for a fresh agent. (the other `PLAN.md` is the unrelated gpu
 bulk-tile handoff — leave it.) goal: stop running the clear-sky coverage scan as a
-separate second read pass and instead measure it **during detection**, so it rides
-the fleet's parallelism and SCL is touched once. this is a perf + architecture change
-to the **derived view's denominator only** — the score formula and the data model
-(detections are the archive, clusters/coverage are derived) do not change.
+separate second read pass. instead, **during detection** emit a gridded **cloud mask**
+(`clouds/`: `(cell, date) → cloud_frac`, AOI-agnostic) and compute the persistence
+denominator by **spatial-joining each cluster anchor against it** — so SCL is touched
+once, the work rides the fleet, and AOIs leave the stored data model entirely (they
+are only the scan extent). the score formula is UNCHANGED; only the source of
+`n_clear_obs` moves (a second SCL pass → a join against the mask).
 
 ## why
 
@@ -31,70 +33,103 @@ pole; detection itself is ~instant by comparison once parallel.
 the detection pass already opens each scene and (for the point-AOI `GdalReader`)
 reads SCL windows when a block is hot. it does NOT currently read SCL for clear-but-
 unlit scenes (that is the scan's whole reason to exist) — so the fold-in's real cost
-is **one small SCL window read per scene at the AOI site**, added to detection but
-replacing the entire second pass, and sharded across the fleet for free.
+is **one SCL read per scene, gridded over the scan window into a cloud mask**, added
+to detection but replacing the entire second pass, and sharded across the fleet for
+free.
 
-## target architecture
+## target architecture — a cloud mask, spatial-joined (no AOIs in the data)
 
-measure the denominator at detect time, store it per scene next to the detections,
-roll it up in `archive`, and have the cluster step read it instead of scanning.
+persistence is a SPATIAL question — "how many clear looks at THIS point?" — so the
+right artifact is a **gridded cloud layer per scene** that you spatial-join against the
+detections at cluster time. AOIs disappear from the stored model entirely: they are
+only the scan EXTENT (where the detector looked), never a key or a column — exactly
+like detections already are (a fact at `(lon,lat,date)`, AOI-agnostic). this is cleaner
+than per-AOI/per-site coverage and it's reusable: a cloud mask is useful to anything
+spatial, not tied to this run's terminals.
 
-keep it **AOI-agnostic and location-keyed** (the data model): a clear-sky look at
-`(lon,lat)` on a date is a fact independent of viewport — store `lon,lat,cloud_frac`
-per scene per site, key the rollup by location, and match each cluster anchor to its
-nearest site at read time. no AOI identity stored, no AOI list needed at cluster time.
+the archive is being repopulated from scratch — no back-compat with `coverage/`. one
+detect pass produces:
+- `detections/` — one row per hot pixel (`lon,lat,date,b12,b11,…`). UNCHANGED, pure
+  (parity gate), AOI-agnostic.
+- `clouds/` — the cloud mask: one row per **(cell, date)** = `glon, glat, date,
+  cloud_frac`, where `glon/glat` are `lon/lat` snapped to a fixed grid (~100 m). a
+  per-scene slice of a global mask; overlapping scans of a cell on a date dedup
+  (`DISTINCT`, like detections). REPLACES `coverage/` AND the per-AOI `observations/`
+  idea outright. the scan FOOTPRINT (Detect-button gating) derives from it too (which
+  cells/dates were observed).
+- `clusters/` — derived; `n_clear_obs` comes from a SPATIAL JOIN of each anchor's cell
+  against `clouds/`.
 
-### 1. core (`core/src/coverage.rs`, `core/src/score.rs`) — minimal
+**why a grid, not per-AOI rows:** a clear look is a fact about a place on a date, not
+about an AOI. keying coverage by AOI re-imports viewport identity into the archive
+(overlapping AOIs double-count; the web map can't reuse it for arbitrary viewports).
+the grid is the AOI-agnostic shape — and the denominator falls straight out of the
+spatial join you'd reach for anyway: `anchor_cell ⋈ clouds(cell,date)`.
 
-- reuse `cover_sites` as-is (it already samples a 5×5 SCL window at arbitrary sites
-  and returns the class histogram).
-- move the `cloud_frac` derivation (currently inline in `cli/read::cover_scene`,
-  `read.rs` ≈l.398: `hist[3]+hist[8]+hist[9]+hist[10]` over `px_valid`) into a small
-  `core` helper (e.g. `CoverRow::cloud_frac()`), so detect and cluster share ONE
-  classifier and can't drift. keep `CLEAR_MAX = 0.10` as the clear rule.
-- `set_observations` / `score_cluster` are UNCHANGED. the fold-in only feeds a
-  differently-sourced `n_clear_obs`.
+**why not just a column on detection rows:** the denominator is made of clear-but-UNLIT
+cells — observed clear with NO flare → zero detection rows. so cloud state must live in
+its own per-(cell,date) layer covering the whole scanned window, not only where pixels
+lit.
 
-### 2. detection writes a per-scene coverage sidecar (`cli/src/read.rs`, `main.rs`)
+### 1. core — grid the SCL window into cells (`core/src/coverage.rs`, `core/src/score.rs`)
 
-- the site for a scene is the **AOI feature's representative point** (centre of the
-  AOI det window — `det_bbox(aoi,item)` midpoint; the AOI is a single terminal so one
-  site/feature is right). thread the AOI `lon,lat` into the per-scene call.
-- in `GdalReader::candidates` (or a thin wrapper in `detect_scene`), after `utm_bbox`
-  is known, **always** open SCL (`item.bands.scl`) and sample the site window via
-  `cover_sites` → one `cloud_frac` (NaN/absent when no SCL band or site off-tile).
-  this is an extra windowed SCL read per scene — cheap (5×5 px decodes one JP2 tile),
-  and the only added I/O.
-- `run_detect` (`main.rs` ≈l.268): in the success branch, write a sidecar
-  `<out>/<aoi.id>/<mgrs>_<date>.cov` = `lon,lat,date,cloud_frac` (one row; the success
-  `.csv` is still written for detections, header-only when flareless). presence of the
-  `.csv` already means "scene done", so the `.cov` rides the same resumable lifecycle.
-  do NOT add columns to the detections `.csv` (keep the parquet schema / parity gate
-  intact — see CLAUDE.md).
-- note: `detect_scene`'s last arg is `screen_overview`; `run_detect` passes `false`,
-  so the existing `cf` bool is meaningless there today. don't rely on it — read SCL at
-  the site explicitly.
+- reuse `cover_sites` (it already samples a 5×5 window at arbitrary sites): generate a
+  grid of cell-centre sites tiling the scan window at the grid step, pass them in →
+  `cloud_frac` per cell. add a thin `grid_sites(bbox, step)` helper (or have the caller
+  build the grid).
+- move the `cloud_frac` derivation (inline in `cli/read::cover_scene`, `read.rs`
+  ≈l.398: `(hist[3]+hist[8]+hist[9]+hist[10]) / px_valid`) into a shared `core` helper
+  (e.g. `CoverRow::cloud_frac()`) so detect + cluster share ONE classifier. keep
+  `CLEAR_MAX = 0.10`.
+- `set_observations` / `score_cluster` UNCHANGED — only the source of `n_clear_obs`
+  changes (now: count of distinct clear dates for the anchor's cell).
 
-### 3. `archive` rolls up the sidecars (`cloud/box.sh::archive` + `ARCHIVER`)
+### 2. detection emits the cloud-mask slice (`cli/src/read.rs`, `main.rs`)
 
-- after the gather (already brings every member's CSVs to the head), add a duckdb
-  COPY over `out/*/*.cov` → `s3://$BUCKET/coverage/persistence.parquet`, one row per
-  site: `lon, lat, n_clear_obs = count(DISTINCT date) FILTER (cloud_frac <= 0.10)`,
-  `n_obs = count(DISTINCT date)`. (this is alongside the existing `coverage/` scan
-  FOOTPRINT — name them distinctly, e.g. footprint vs persistence.)
-- drop the `cluster --coverage-scan` invocation once the new path lands (keep it
-  behind a flag during validation, step 5).
+- in `GdalReader::candidates` (or a wrapper in `detect_scene`), after `utm_bbox` is
+  known, **always** open SCL (`item.bands.scl`) and sample it over the **grid covering
+  the scan window** → `(glon, glat, cloud_frac)` per cell. this is the only added I/O —
+  one SCL read per scene (incl. flareless/cloudy: that is the unlit denominator). today
+  `GdalReader` reads SCL only lazily at hot blocks, so this is genuinely new per-scene
+  work, but it's cheap (a 20 m band) and rides the fleet.
+- `run_detect` (`main.rs` ≈l.268): write a sibling per-scene file
+  `<out>/<aoi.id>/<mgrs>_<date>.cld` = rows `glon,glat,date,cloud_frac`, in BOTH the
+  success and flareless branches (the detections `.csv`/`.err` still drives
+  resumability; the `.cld` rides it). do NOT touch the detections `.csv` schema (parity
+  gate).
+- snap `glon/glat` to the grid (round `lon/lat` to ~3 dp ≈ 100 m) — the SAME snapping
+  used at join time (step 4). note: `detect_scene`'s `screen_overview` arg is `false`
+  in `run_detect`, so the existing `cf` bool is meaningless there — read SCL explicitly.
 
-### 4. cluster step reads the denominator instead of scanning (`cli/src/main.rs`)
+### 3. `archive` rolls the cloud mask up — `coverage/` → `clouds/` (`cloud/box.sh::archive` + `ARCHIVER`)
 
-- new path in `run_cluster`: load the per-site persistence rows (a new
-  `--coverage <glob|parquet>` arg, read like the detections archive via
-  `view::read_*`). after `cluster_detections`, for each cluster find the nearest site
-  within an AOI-scale tolerance (~a few km — sites are one-per-terminal) and call
-  `set_observations(n_clear_obs)`. unmatched cluster → leave `observations = None`
-  (persistence skipped, as today when coverage is absent).
-- retire `coverage_rescore`'s STAC-search + `cover_scene` pass (keep the fn behind the
-  old `--coverage-scan` flag for validation/fallback only).
+- after the gather, duckdb COPY over `out/*/*.cld` → `s3://$BUCKET/clouds/data.parquet`,
+  `SELECT DISTINCT glon,glat,date,cloud_frac … ORDER BY date` (dedup overlapping scans,
+  date row-group pruning). hive-partition by `mgrs` if it helps range reads.
+- this REPLACES `coverage/` — both downstream uses derive from `clouds/`:
+  - persistence: per cell, `n_clear_obs = count(DISTINCT date) FILTER (cloud_frac ≤ 0.10)`.
+  - scan FOOTPRINT: which cells/tiles/dates were observed (group by cell/tile).
+- DELETE the `cluster --coverage-scan` invocation and the standalone footprint COPY in
+  `ARCHIVER` (keep `coverage_rescore` behind its flag for validation only, step 5).
+
+### 4. clustering spatial-joins the mask (`cli/src/main.rs`)
+
+- new `--clouds <glob|parquet>` arg; `run_cluster` loads `clouds/` via `view::read_*`.
+- after `cluster_detections`, for each cluster snap its anchor `(lon,lat)` to the grid →
+  cell, and `n_clear_obs = count of DISTINCT dates where clouds[cell].cloud_frac ≤ 0.10`
+  → `set_observations(n_clear_obs)`. this is the spatial join (a hash join on snapped
+  coords; widen to the 8 neighbouring cells if an anchor lands on a cell edge). a
+  cluster whose cell has no cloud rows → `observations = None` (persistence skipped, as
+  today when coverage is absent).
+- retire `coverage_rescore`'s STAC-search + `cover_scene` pass (keep behind the old
+  `--coverage-scan` flag for validation/fallback only).
+
+### grid resolution
+
+snap to ~100 m (3 dp) to match the original 5×5 @ 20 m sampling window — the anchor's
+cell ≈ the old per-anchor window, so the denominator is near-identical. tunable; coarsen
+(fewer rows) only with the step-5 validation re-run. the ONLY hard rule: detection and
+clustering must snap to the SAME grid or the join misses.
 
 ### 5. validation (do this BEFORE making it default)
 
@@ -102,28 +137,36 @@ this session's run is the ground truth: `s3://s2-flares-archive/clusters/data.pa
 (per-cluster `persistence`, anchor-sampled) + `out/coverage/*.csv` (per-anchor
 `cloud_frac`). compare fold-in vs scan:
 
-- per cluster: `n_clear_obs` (fold-in, AOI-site) vs scan (anchor), and the resulting
-  `persistence_score` / `total_score`.
+- per cluster: `n_clear_obs` (cloud mask — the anchor's grid cell) vs scan (anchor's
+  5×5 window), and the resulting `persistence_score` / `total_score`.
 - acceptance: |Δtotal_score| small (target < ~0.02) for the overwhelming majority and
-  **no rank inversions in the top sites**. the only expected difference is the sample
-  point (AOI centre vs post-hoc anchor) — for compact terminals they coincide; flag
-  any site where they don't and inspect.
-- add a `core` unit test for the new classifier helper; keep `cover_sites` tests.
+  **no rank inversions in the top sites**. both sample at the anchor location (~100 m),
+  so they should be near-identical; the only difference is grid snapping vs an exact
+  centre — flag any site where they diverge and inspect (likely a cell-edge anchor →
+  the 8-neighbour widen in step 4).
+- add a `core` unit test for the grid helper + the shared classifier; keep `cover_sites`
+  tests.
 
 ## methodology guardrail
 
 the frozen methodology must not drift (CLAUDE.md): `score_cluster` / the score formula
-/ the `0.10` clear rule / the 5×5 window all stay identical. the ONLY change is that
-`n_clear_obs` is sampled at the AOI site during detection rather than at the cluster
-anchor during a second pass. validate (step 5) that this is score-neutral, document
-the change, then make it the default and delete the second pass.
+/ the `0.10` clear rule / the 5×5 (≈100 m) window all stay identical. the ONLY change
+is that the clear look is sampled onto a ~100 m grid during detection and the anchor's
+cell is read back via spatial join, rather than re-sampled at the anchor in a second
+pass — same location, same window scale. validate (step 5) that this is score-neutral,
+document it, then make it default and delete the second pass.
 
 ## bonus (note, don't block on it)
 
-storing per-scene clear-sky looks in the archive (location-keyed) means the **web map
-can compute `n_clear_obs` live in wasm** for any viewport/date window — today it can
-only use the stored full-window snapshot. the fold-in unlocks live persistence on the
-map for free.
+- a location-keyed cloud mask means the **web map can compute `n_clear_obs` live in
+  wasm** for any viewport/date window (spatial-join detections against the mask in the
+  browser) — today it can only use the stored full-window snapshot. live persistence on
+  the map, for free.
+- it also **fixes a window-matching bug for free**: the separate scan was driven by
+  `box.sh archive`'s `START/END` (default `2015-01-01 → 2100-01-01`), so persistence
+  counted a decade of clear looks against an 18-month detection window — a deflated
+  denominator (and a ~7× slower scan). tying observations to the scenes detection
+  actually swept makes the persistence window ALWAYS equal the detection window.
 
 ## files
 

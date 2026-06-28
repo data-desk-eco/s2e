@@ -272,7 +272,7 @@ archive(){
   mssh 0 "cd $REPO_DIR && . /etc/profile.d/eodata.sh && \
         S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
         S2_S3_ACCESS_KEY='$ak' S2_S3_SECRET_KEY='$sk' \
-        ./target/release/s2-flares cluster --source cdse \
+        ./target/release/s2-flares cluster --source cdse --concurrency ${COVERAGE_CONCURRENCY:-16} \
           --archive 's3://$BUCKET/detections/**/*.parquet' --coverage-scan '$OUT/coverage' \
           --out 's3://$BUCKET/clusters/data.parquet' --start '${START:-2015-01-01}' --end '${END:-2100-01-01}'"
 }

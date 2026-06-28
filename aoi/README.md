@@ -8,7 +8,20 @@ FeatureCollection whose features carry `id` and `name` properties.
 
 Each dataset is two files kept side by side: the raw vendor source, and a small
 **DuckDB `.sql`** that fits it to the AOI schema. The SQL carries all the dataset
-quirks (filtering, dedup, geometry) so the CLI stays generic.
+quirks (filtering, dedup, geometry) so the CLI stays generic. A `.sh` builds the
+AOIs and kicks off the run; the built `.geojson` is what ships to the box.
+
+## What's here
+
+| AOI | scope | used for |
+|---|---|---|
+| `lng-terminals.geojson` | every global LNG export terminal (81) | the full bulk run |
+| `lng-select.geojson` | a curated handful (26) | the routine "run a few terminals" workflow |
+| `ras-laffan-das-island.geojson` | 4 hand-picked Gulf flares | the smoke-test / archive fixture |
+
+Each is driven the same way (`--aoi <file>`); they differ only in how many features
+they carry. The first is generated from a vendor catalogue (below); the latter two
+are small curated subsets.
 
 ## LNG export terminals (global)
 
@@ -37,3 +50,18 @@ box, `box.sh archive` then grows the per-tile parquet archive on object storage.
 Quality scoring is downstream — derive the cluster view (`s2-flares cluster
 --archive …`, same `core` score) or query the archive in DuckDB. Tunables are env
 vars in the `.sh` (`START`/`END`, `OUT`, `SOURCE`, `S2_CONCURRENCY`, …).
+
+## Selection & test AOIs
+
+`lng-select.geojson` is the small AOI behind the routine "kick off a run over a few
+interesting terminals" workflow. `lng-select.sh` picks them out of the global
+`lng-terminals.geojson` — edit its `NAMES`/`REGIONS` and re-run to repick:
+
+```sh
+bash aoi/lng-select.sh                    # repick the subset → lng-select.geojson
+cloud/box.sh launch --aoi aoi/lng-select.geojson --start 2025-01-01 --end 2026-06-30
+```
+
+`ras-laffan-das-island.geojson` is a hand-written 4-feature fixture (the Qatar +
+Das Island Gulf flares) — the smoke test for a fast end-to-end run and the seed for
+the archive's reference data. No generator; it's small enough to keep by hand.

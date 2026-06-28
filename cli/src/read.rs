@@ -303,7 +303,7 @@ impl SceneReader for GdalReader {
     }
 }
 
-/// the bulk full-tile reader (PLAN.md): for the `--region` wide-area path, fetch +
+/// the bulk full-tile reader: for the `--region` wide-area path, fetch +
 /// decode each band WHOLE once, hold all bands resident, then iterate `all_blocks`
 /// slicing from RAM — **zero per-block I/O**. windowed range-reads re-do codestream
 /// decode per block (the ~12s/tile that left the GPU idle); one whole-tile decode

@@ -353,9 +353,10 @@ EOS
 )
 
 # make the archive a web-map backend: anonymous public-read on detections/* +
-# clusters/* + CORS, so a browser (e.g. DuckDB-wasm) can range-read the parquet
+# clusters/* + vnf/* + CORS, so a browser (e.g. DuckDB-wasm) can range-read the parquet
 # directly — scalar cluster pins from clusters/, raw-detection reclustering from
-# detections/. clouds/ is an INTERNAL build artifact (the anchor⋈mask join runs at
+# detections/, VIIRS Nightfire daily observations from vnf/ (burnoff's VNF mode).
+# clouds/ is an INTERNAL build artifact (the anchor⋈mask join runs at
 # build time, baked into clusters/) so it is NOT published. one-time per bucket; needs
 # aws-cli (RadosGW S3 policy/CORS aren't openstack/swift operations).
 publish(){
@@ -364,9 +365,9 @@ publish(){
   local ak sk; read -r ak sk < <(s3creds)
   local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api)
-  say "Publishing s3://$BUCKET/{detections,clusters} for web-map access (public-read + CORS)"
+  say "Publishing s3://$BUCKET/{detections,clusters,vnf} for web-map access (public-read + CORS)"
   "${aws_s3[@]}" put-bucket-cors --bucket "$BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
+  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
   echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters}/…"
 }
 

@@ -6,7 +6,7 @@
 #   ./box.sh run <detect args>        detached, resumable detection + live progress
 #   ./box.sh pull                     rsync the per-scene CSVs down to $LOCAL_DATA
 #   ./box.sh archive                  roll the CSVs up to s3://$BUCKET/{detections,
-#                                     clusters} (per-tile raw parquet + the view)
+#                                     clusters,coverage} (raw parquet + view + footprint)
 #   ./box.sh publish                  make that archive a web-map backend: anonymous
 #                                     public-read + CORS, so DuckDB-wasm can read it
 #   ./box.sh wipe                     empty the archive bucket (confirms; FORCE=1 skips)
@@ -202,13 +202,16 @@ pull(){
 #                clusters/data.parquet (one row/cluster + nested detections list).
 #                co-produced here, not in a separate run; the web map still re-clusters
 #                live in wasm for arbitrary windows. clustered full-window (START/END).
+#   coverage/    the scan FOOTPRINT — coverage/data.parquet, one row per (tile,
+#                quarter) processed + its detection bbox. lets the web map gate its
+#                in-browser "Detect" to archive gaps. co-produced in the same pass.
 # duckdb (rollup) + the cli (cluster) both run on the box, in-region; mgrs lives in the
 # detections path (EXCLUDEd), date stays a column; project S3 creds from openstack ec2.
 archive(){
   auth
   openstack container show "$BUCKET" >/dev/null 2>&1 || { say "Bucket $BUCKET"; openstack container create "$BUCKET" >/dev/null; }
   local ak sk; read -r ak sk < <(s3creds)
-  say "Archive $OUT → s3://$BUCKET/detections (per-tile parquet)"
+  say "Archive $OUT → s3://$BUCKET/{detections (per-tile parquet),coverage (scan footprint)}"
   local b64; b64=$(printf '%s' "$ARCHIVER" | base64 | tr -d '\n')
   sshx "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' OUT='$REPO_DIR/$OUT' bash"
   say "Cluster view → s3://$BUCKET/clusters/data.parquet"
@@ -233,26 +236,36 @@ tiles=$(for f in "$OUT"/*/*.csv; do [ "$(wc -l <"$f")" -gt 1 ] && b=$(basename "
   for m in $tiles; do
     echo "COPY (SELECT DISTINCT * EXCLUDE(mgrs) FROM read_csv('$OUT/*/${m}_*.csv', union_by_name=true) ORDER BY date) TO 's3://$BUCKET/detections/mgrs=$m/data.parquet' (FORMAT parquet);"
   done
+  # coverage/ the scan FOOTPRINT — one row per (tile, quarter) actually processed,
+  # with that tile-quarter's detection bbox. the web map folds these rects into its
+  # "already detected" test so the Detect button only lights over archive gaps. read
+  # over EVERY scene CSV (not just the non-empty tile list): flareless scenes are
+  # header-only so they add no rows — coverage thus UNDER-claims (the safe direction;
+  # Detect stays enabled on a scanned-but-flareless tile, never wrongly disabled).
+  echo "COPY (SELECT mgrs, year(CAST(date AS DATE)) AS y, quarter(CAST(date AS DATE)) AS q,
+        min(lon) AS w, min(lat) AS s, max(lon) AS e, max(lat) AS n, count(*) AS n_det
+        FROM read_csv('$OUT/*/*.csv', union_by_name=true) GROUP BY mgrs, y, q)
+        TO 's3://$BUCKET/coverage/data.parquet' (FORMAT parquet);"
 } | "$DDB"
 "$DDB" -c "$S3 SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/detections/**/data.parquet', hive_partitioning=true);"
 EOS
 )
 
 # make the archive a web-map backend: anonymous public-read on detections/* +
-# clusters/* + CORS, so a browser (e.g. DuckDB-wasm) can range-read the parquet
-# directly — scalar cluster pins from clusters/, raw-detection reclustering from
-# detections/. one-time per bucket; needs aws-cli (RadosGW S3 policy/CORS aren't
-# openstack/swift operations).
+# clusters/* + coverage/* + CORS, so a browser (e.g. DuckDB-wasm) can range-read the
+# parquet directly — scalar cluster pins from clusters/, raw-detection reclustering
+# from detections/, the scan footprint (Detect-button gating) from coverage/. one-time
+# per bucket; needs aws-cli (RadosGW S3 policy/CORS aren't openstack/swift operations).
 publish(){
   auth
   command -v aws >/dev/null || { echo "publish needs aws-cli (brew install awscli)" >&2; exit 1; }
   local ak sk; read -r ak sk < <(s3creds)
   local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api)
-  say "Publishing s3://$BUCKET/{detections,clusters} for web-map access (public-read + CORS)"
+  say "Publishing s3://$BUCKET/{detections,clusters,coverage} for web-map access (public-read + CORS)"
   "${aws_s3[@]}" put-bucket-cors --bucket "$BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
-  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters}/…"
+  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/coverage/*"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
+  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters,coverage}/…"
 }
 
 # empty the archive bucket (every object; the bucket stays) — e.g. to start fresh

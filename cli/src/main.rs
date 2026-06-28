@@ -53,8 +53,8 @@ enum Cmd {
         /// omit → geojson to stdout.
         #[arg(long, value_name = "FILE")]
         out: Option<String>,
-        /// Min distinct dates per cluster.
-        #[arg(long, default_value_t = 1)]
+        /// Min distinct dates per cluster (persistence floor: drop one-off detections).
+        #[arg(long, default_value_t = 4)]
         min_dates: usize,
         /// Min mean B12 per cluster.
         #[arg(long, default_value_t = 0.5)]

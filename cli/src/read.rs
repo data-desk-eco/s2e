@@ -403,14 +403,31 @@ pub fn cover_scene(item: &Item, sites: &[Site]) -> Vec<(String, f64)> {
 /// per observed cell. emitted for EVERY scene incl. flareless/cloudy — those clear-but-
 /// unlit looks are the honest persistence denominator the detection archive can't carry.
 /// classifier shared with the cluster join via `core` (CoverRow::cloud_frac), so the
-/// detection-time mask and the cluster-time denominator can't drift. `bbox` is the
-/// wgs84 scan window (the tile's own bbox for the full-tile path).
+/// detection-time mask and the cluster-time denominator can't drift.
+///
+/// CRITICAL: the grid must cover the SAME footprint the detector scans, not the raw AOI
+/// bbox. `enumerate_blocks` rounds the AOI out to ~512 px blocks (+overlap) and
+/// `detect_block` reports hits across the WHOLE block — so detections (and thus clusters)
+/// spread up to ~10 km beyond the AOI polygon. gridding only the AOI bbox left those edge
+/// clusters with no cell to join. so we grid the union of the detector's blocks (same
+/// `enumerate_blocks`/`all_blocks` call), reprojected pixel→wgs84.
 pub fn cloud_scene(item: &Item, bbox: [f64; 4], full_tile: bool) -> Vec<(String, f64)> {
     let url = match &item.bands.scl { Some(u) => u, None => return Vec::new() };
     let r = match open(url) { Ok(r) => r, Err(_) => return Vec::new() };
     let scl = match whole::<u8>(&r) { Some(v) => v, None => return Vec::new() };
-    let sites = grid_sites(if full_tile { item.bbox } else { bbox });
-    cover_sites(&scl, r.width, r.height, r.bbox, item.epsg, &sites).into_iter()
+    // the detector's exact block footprint (SCL is 20 m, same grid/extent as B12).
+    let blocks = if full_tile { all_blocks(r.width, r.height) }
+        else { enumerate_blocks(r.width, r.height, r.bbox, r.res_x, r.res_y, bbox, item.epsg) };
+    if blocks.is_empty() { return Vec::new(); }
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+    for b in &blocks { x0 = x0.min(b.window[0]); y0 = y0.min(b.window[1]); x1 = x1.max(b.window[2]); y1 = y1.max(b.window[3]); }
+    // pixel union → utm → wgs84 bbox (utm is rotated, so reproject all four corners).
+    let (zone, isn) = s2_flares_core::utm_params(item.epsg);
+    let px = |x: usize, y: usize| s2_flares_core::utm_to_wgs84(r.bbox[0] + x as f64 * r.res_x, r.bbox[3] - y as f64 * r.res_y, zone, isn);
+    let c = [px(x0, y0), px(x1, y0), px(x0, y1), px(x1, y1)];
+    let wb = [c.iter().map(|p| p.0).fold(f64::INFINITY, f64::min), c.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
+              c.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max), c.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max)];
+    cover_sites(&scl, r.width, r.height, r.bbox, item.epsg, &grid_sites(wb)).into_iter()
         .map(|c| { let f = c.cloud_frac(); (c.h3, f) }).collect()
 }
 

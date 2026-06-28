@@ -56,10 +56,15 @@ pub fn read_archive(archive: &str, bbox: Option<[f64; 4]>, start: &str, end: &st
     if let Some([w, s, e, n]) = bbox {
         wheres.push(format!("lon >= {w} AND lon <= {e} AND lat >= {s} AND lat <= {n}"));
     }
+    // `radiance` is newer than `pixels`/`warm_size` — a pre-fix archive lacks it.
+    // the false-filtered template declares the column so union_by_name backfills NULL
+    // (→ 0) for legacy rows instead of duckdb erroring on a missing column. (legacy
+    // `pixels` is still the old flooded count, though — re-detect for a clean volume.)
     let sql = format!(
         "{prelude}\
          COPY (SELECT lon, lat, date, max_b12, max_b11, b12_b11_ratio, pixels, sun_elevation, sun_azimuth, glint_score, radiance \
-         FROM read_parquet('{archive}', union_by_name=true) WHERE {wheres}) \
+         FROM (SELECT * FROM read_parquet('{archive}', union_by_name=true) \
+               UNION ALL BY NAME SELECT NULL::DOUBLE AS radiance WHERE false) WHERE {wheres}) \
          TO '{out_s}' (FORMAT CSV, HEADER)",
         prelude = s3_prelude(), wheres = wheres.join(" AND ")
     );

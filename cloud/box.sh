@@ -180,7 +180,9 @@ start_member(){
     aoiarg="--aoi _aoi.geojson"; fi
   say "  [$i] build (incremental)$feat"
   mssh "$i" "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && ${cudaenv}cargo build --release -q -p s2-flares-cli$feat"
-  mssh "$i" "cd $REPO_DIR && nohup bash -lc './target/release/s2-flares detect --source cdse $aoiarg ${rest[*]} --out $OUT' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  [$i] detect started'"
+  # stop any detect already running on this member first → re-run is idempotent (resumable),
+  # never two detects racing on the same per-scene CSVs. then launch the fresh one detached.
+  mssh "$i" "pkill -x s2-flares 2>/dev/null; sleep 1; cd $REPO_DIR && nohup bash -lc './target/release/s2-flares detect --source cdse $aoiarg ${rest[*]} --out $OUT' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  [$i] detect started'"
 }
 # round-robin split → /tmp/_shard-<i>.geojson (balanced slices; keeps the cli generic).
 shard_aoi(){ python3 - "$1" "$2" <<'PY'

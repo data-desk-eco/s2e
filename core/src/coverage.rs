@@ -62,3 +62,32 @@ pub fn cover_sites(scl: &[u8], width: usize, height: usize, img_bbox: [f64; 4], 
     }
     rows
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geo::{utm_params, wgs84_to_utm};
+
+    // a site at a tile's centre samples its 5×5 (HALF_WIN=2) window; a site off the
+    // tile is dropped (in-footprint filter); class 0 (nodata) doesn't count as valid.
+    #[test]
+    fn samples_site_window() {
+        let (lon, lat, epsg) = (-102.0, 32.0, 32613); // utm 13N
+        let (zone, is_north) = utm_params(epsg);
+        let (e, n) = wgs84_to_utm(lon, lat, zone, is_north);
+        let (w, h) = (20usize, 20usize);
+        let bbox = [e - 100.0, n - 100.0, e + 100.0, n + 100.0]; // 10 m px, centre at (10,10)
+        let mut scl = vec![6u8; w * h]; // all water (valid, not cloud)
+        scl[0] = 0; // a nodata pixel outside the central window — must not be counted
+        let sites = vec![
+            Site { h3: "centre".into(), lon, lat },
+            Site { h3: "offtile".into(), lon: lon + 1.0, lat },
+        ];
+        let rows = cover_sites(&scl, w, h, bbox, epsg, &sites);
+        assert_eq!(rows.len(), 1, "off-tile site dropped");
+        assert_eq!(rows[0].h3, "centre");
+        assert_eq!(rows[0].px_valid, 25); // full 5×5, none nodata
+        assert_eq!(rows[0].hist[6], 25);
+        assert_eq!(rows[0].hist[0], 0);
+    }
+}

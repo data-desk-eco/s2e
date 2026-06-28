@@ -93,6 +93,9 @@ This is the central design decision; everything else follows from it.
   flare detection, not bright-pixel detection.
 - **cluster_detections is a pure function** with no global state; callers pass a
   cloud-free observation count for the persistence denominator, or `None` to skip.
+  `Cluster::set_observations(n_clear_obs)` re-attaches a per-site measured denominator
+  and rescores via the same `score_cluster` (the archive coverage path == the
+  fresh-detect path; one scoring impl, no drift).
 - **Each cluster has a deterministic `id`** (base36 hash of anchor lat/lon at 4 dp),
   byte-for-byte identical to the JS hash, for stable deep-linking and caching.
 - **serde is a `core` feature**, off by default so the pure core stays
@@ -122,9 +125,16 @@ Two subcommands over one area (`--bbox W,S,E,N`) or many (`--aoi file.geojson`):
   local testing; `--source cdse` (eodata JP2, harmonised) is the box.
 - **`cluster`** derives the view: `core::cluster_detections` over the archive
   (`--archive <duckdb glob>`) or a fresh `detect`, written by `--out` extension —
-  `.geojson` (journalist) or nested-array parquet / `s3://…/clusters/…` (web map);
+  `.geojson` (journalist) or nested-array parquet / `s3…/clusters/…` (web map);
   omit `--out` for GeoJSON to stdout. DuckDB does the parquet/S3 read+write; Rust
   does the clustering; a flat-CSV handoff bridges them (no native parquet deps).
+  `--coverage-scan <dir>` adds the SOTA persistence pass (permian-flaring): after
+  clustering, sample SCL (`core::cover_sites`) at every cluster anchor over every
+  acquisition (per-tile STAC search → resumable per-scene CSV in `<dir>`), then
+  `Cluster::set_observations` rescores each site with its measured `n_clear_obs`
+  denominator → real `persistence = n_dates / n_clear_obs`. The min-dates floor stays
+  recall-first (drop true singletons only, `n_dates ≥ 2`); persistence is a continuous
+  score term, never a hard count gate — a count gate discards dim-but-persistent flares.
 
 Detector thresholds default recall-first; tighten any single variable with its own
 flag (`--b12-min`, `--b11-min`, `--peak-b12-min`, `--contrast-ratio`,
@@ -167,10 +177,14 @@ co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2` direc
   MGRS tile (idempotent PUT; a `SELECT DISTINCT … ORDER BY date` union of that tile's
   scene CSVs), queryable in one `read_parquet('s3://…/**/*.parquet',
   hive_partitioning=true)`. `clusters/`: the derived view (`clusters/data.parquet`),
-  produced by running `s2-flares cluster` over the fresh `detections/` full-window.
-  DuckDB (rollup) and the cli (cluster) both run on the box (in-region) with project
-  S3 creds from `openstack ec2 credentials` (the cli's duckdb reads them from
-  `S2_S3_ENDPOINT`/`AWS_*` env); the box is disposable, the S3 archive persists.
+  produced by running `s2-flares cluster --coverage-scan` over the fresh `detections/`
+  full-window — which also runs the site-anchored clear-sky persistence pass (SCL
+  sampled at each anchor over every acquisition → `n_clear_obs`). DuckDB (rollup,
+  cluster i/o) and the cli (cluster) both run on the box (in-region); the cluster step
+  carries TWO credential sets at once — duckdb reads detections / writes clusters on
+  the project bucket via `S2_S3_*` env (from `openstack ec2 credentials`), while gdal
+  `/vsis3` reads SCL from `eodata` via `AWS_*` (per-VM profile) for the coverage scan;
+  the two are kept separate so they don't collide. The box is disposable, S3 persists.
 - **`publish`** makes the archive a web-map backend: anonymous public-read on
   `detections/*` + `clusters/*` + CORS (via aws-cli — RadosGW S3 ops), so DuckDB-wasm
   reads the parquet directly over HTTP range requests — scalar pins from `clusters/`,

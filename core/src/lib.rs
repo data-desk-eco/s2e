@@ -18,7 +18,7 @@ pub use detect::{
     enumerate_blocks, Block, BlockMeta, Detection, Thresholds, BLOCK_SIZE, BLOCK_OVERLAP,
 };
 pub use cluster::{cluster_detections, Cluster, ClusterOptions, DedupedDet};
-pub use coverage::{cover_sites, CoverRow, Site};
+pub use coverage::{cover_sites, grid_sites, cell_key, snap, CoverRow, Site, CLEAR_MAX, GRID_STEP};
 pub use geo::{
     wgs84_to_utm, utm_to_wgs84, utm_params, epsg_from_mgrs, pad_bbox, bbox_area_km2,
     meters_to_degrees_lat, meters_to_degrees_lon,

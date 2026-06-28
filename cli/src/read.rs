@@ -10,7 +10,7 @@
 
 use gdal::raster::ResampleAlg;
 use gdal::Dataset;
-use s2_flares_core::{detect_block, enumerate_blocks, cover_sites, Block, BlockMeta, Detection, Site, Thresholds, BLOCK_SIZE, BLOCK_OVERLAP};
+use s2_flares_core::{detect_block, enumerate_blocks, cover_sites, grid_sites, Block, BlockMeta, Detection, Site, Thresholds, BLOCK_SIZE, BLOCK_OVERLAP};
 use crate::stac::Item;
 
 pub(crate) const OVERVIEW_FACTOR: usize = 8; // 8× = 160 m screen for 20 m bands
@@ -394,10 +394,24 @@ pub fn cover_scene(item: &Item, sites: &[Site]) -> Vec<(String, f64)> {
     let url = match &item.bands.scl { Some(u) => u, None => return Vec::new() };
     let r = match open(url) { Ok(r) => r, Err(_) => return Vec::new() };
     let scl = match whole::<u8>(&r) { Some(v) => v, None => return Vec::new() };
-    cover_sites(&scl, r.width, r.height, r.bbox, item.epsg, sites).into_iter().map(|c| {
-        let cloudy = c.hist[3] + c.hist[8] + c.hist[9] + c.hist[10]; // shadow + cloud med/high + cirrus
-        (c.h3, cloudy as f64 / c.px_valid as f64)
-    }).collect()
+    cover_sites(&scl, r.width, r.height, r.bbox, item.epsg, sites).into_iter()
+        .map(|c| { let f = c.cloud_frac(); (c.h3, f) }).collect()
+}
+
+/// the cloud-mask slice for one scene (the persistence fold-in): one whole-band SCL
+/// read, sampled over a ~100 m grid covering the scan window → (cell_key, cloud_frac)
+/// per observed cell. emitted for EVERY scene incl. flareless/cloudy — those clear-but-
+/// unlit looks are the honest persistence denominator the detection archive can't carry.
+/// classifier shared with the cluster join via `core` (CoverRow::cloud_frac), so the
+/// detection-time mask and the cluster-time denominator can't drift. `bbox` is the
+/// wgs84 scan window (the tile's own bbox for the full-tile path).
+pub fn cloud_scene(item: &Item, bbox: [f64; 4], full_tile: bool) -> Vec<(String, f64)> {
+    let url = match &item.bands.scl { Some(u) => u, None => return Vec::new() };
+    let r = match open(url) { Ok(r) => r, Err(_) => return Vec::new() };
+    let scl = match whole::<u8>(&r) { Some(v) => v, None => return Vec::new() };
+    let sites = grid_sites(if full_tile { item.bbox } else { bbox });
+    cover_sites(&scl, r.width, r.height, r.bbox, item.epsg, &sites).into_iter()
+        .map(|c| { let f = c.cloud_frac(); (c.h3, f) }).collect()
 }
 
 /// the reader seam composed: decode + prescreen (reader) → `core::detect_block` (driver).

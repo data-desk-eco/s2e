@@ -63,9 +63,14 @@ enum Cmd {
         /// Drop clusters scoring below this.
         #[arg(long, default_value_t = 0.0)]
         score_threshold: f64,
-        /// Site-anchored clear-sky coverage scan into DIR (resumable per-scene): sample
-        /// SCL at each cluster anchor over every acquisition → real persistence =
-        /// n_dates/n_clear_obs, rescoring the view. Needs --archive + a scene source.
+        /// Cloud mask (clouds/ glob/parquet) for the persistence denominator: spatial-
+        /// join each cluster anchor's ~100 m cell → n_clear_obs = distinct clear dates,
+        /// rescoring the view. The fold-in default (one SCL read at detect, no 2nd pass).
+        #[arg(long, value_name = "GLOB")]
+        clouds: Option<String>,
+        /// (validation/fallback) Site-anchored clear-sky coverage SCAN into DIR (resumable
+        /// per-scene): re-read SCL at each anchor over every acquisition → persistence.
+        /// Superseded by --clouds; kept to cross-check the fold-in. Needs a scene source.
         #[arg(long, value_name = "DIR")]
         coverage_scan: Option<String>,
         #[command(flatten)]
@@ -233,13 +238,13 @@ fn main() {
             if c.bbox.is_none() && c.aoi.is_none() && c.region.is_none() { die("detect: provide --bbox, --aoi, or --region"); }
             run_detect(c, out, &pool(c.concurrency));
         }
-        Cmd::Cluster { c, archive, out, min_dates, min_avg_b12, score_threshold, coverage_scan } => {
+        Cmd::Cluster { c, archive, out, min_dates, min_avg_b12, score_threshold, clouds, coverage_scan } => {
             if archive.is_none() && c.bbox.is_none() && c.aoi.is_none() && c.region.is_none() {
                 die("cluster: provide --archive GLOB, or --bbox/--aoi/--region to detect fresh");
             }
             let opts = ClusterOptions { merge_distance: 135.0, min_dates: *min_dates,
                 min_avg_b12: *min_avg_b12, observations: None, score_threshold: *score_threshold };
-            run_cluster(c, archive, out, opts, coverage_scan, &pool(c.concurrency));
+            run_cluster(c, archive, out, opts, clouds, coverage_scan, &pool(c.concurrency));
         }
     }
 }
@@ -276,6 +281,14 @@ fn run_detect(c: &Common, out: &str, pool: &rayon::ThreadPool) {
                         let body: String = std::iter::once(SCENE_HEADER.to_string())
                             .chain(dets.iter().map(scene_row)).collect::<Vec<_>>().join("\n") + "\n";
                         let _ = fs::write(&path, body);
+                        // the per-scene cloud-mask slice (.cld) rides the detections .csv:
+                        // the persistence denominator folded into the detection pass, AOI-
+                        // agnostic cells, sampled even on flareless scenes. presence of the
+                        // .csv drives resumability — the .cld is written alongside it.
+                        let cld = read::cloud_scene(item, det_bbox(aoi, item), aoi.full_tile);
+                        let cbody: String = std::iter::once("glon,glat,date,cloud_frac".to_string())
+                            .chain(cld.iter().map(|(k, f)| format!("{k},{},{f}", item.date))).collect::<Vec<_>>().join("\n") + "\n";
+                        let _ = fs::write(format!("{out}/{}/{}_{}.cld", aoi.id, item.mgrs, item.date), cbody);
                         let _ = fs::remove_file(&errp);
                         eprintln!("  {} {}_{}: {} det", aoi.id, item.mgrs, item.date, dets.len());
                         (1, 0, 0, dets.len())
@@ -298,7 +311,7 @@ fn run_detect(c: &Common, out: &str, pool: &rayon::ThreadPool) {
 
 // the derived cluster view — over the archive (--archive) or a fresh detect.
 fn run_cluster(c: &Common, archive: &Option<String>, out: &Option<String>,
-    mut opts: ClusterOptions, coverage_scan: &Option<String>, pool: &rayon::ThreadPool) {
+    mut opts: ClusterOptions, clouds: &Option<String>, coverage_scan: &Option<String>, pool: &rayon::ThreadPool) {
     let (start, end) = c.dates();
     let (detections, observations) = match archive {
         Some(glob) => {
@@ -334,11 +347,14 @@ fn run_cluster(c: &Common, archive: &Option<String>, out: &Option<String>,
     let mut clusters = cluster_detections(&detections, &opts);
     eprintln!("{} detections → {} clusters", detections.len(), clusters.len());
 
-    // site-anchored clear-sky persistence: sample SCL at every anchor over every
-    // acquisition, then rescore with the measured n_clear_obs denominator (the SOTA
-    // metric — a continuous score term, not a date-count gate). archive path only.
-    if let (Some(dir), Some(glob)) = (coverage_scan, archive) {
-        coverage_rescore(c, glob, dir, &start, &end, &mut clusters, pool);
+    // clear-sky persistence: the fold-in path joins each anchor's ~100 m cell against
+    // the cloud mask emitted during detection (one SCL read, no second pass); the
+    // legacy --coverage-scan re-reads SCL at every anchor (kept to cross-check). either
+    // rescores with the measured n_clear_obs denominator via the same score_cluster.
+    if let Some(glob) = clouds {
+        clouds_rescore(glob, &start, &end, &mut clusters);
+    } else if let (Some(dir), Some(arch)) = (coverage_scan, archive) {
+        coverage_rescore(c, arch, dir, &start, &end, &mut clusters, pool);
     }
 
     match out {
@@ -348,6 +364,44 @@ fn run_cluster(c: &Common, archive: &Option<String>, out: &Option<String>,
         },
         None => print!("{}", view::geojson(&clusters)),
     }
+}
+
+// the fold-in rescore: spatial-join each cluster anchor against the cloud mask
+// (clouds/, emitted at detection). n_clear_obs = distinct dates where the anchor's
+// ~100 m cell was clear (cloud_frac ≤ CLEAR_MAX), ∪ the site's own detection dates
+// (a lit look is an observation; guarantees n_dates ⊆). a hash join on the snapped
+// cell key — same grid both sides; widen to the 3×3 neighbourhood when the exact cell
+// has no rows (a cell-edge anchor). a cell with no mask rows → observations left None
+// (persistence skipped, as when coverage is absent). no STAC search, no second SCL pass.
+fn clouds_rescore(glob: &str, start: &str, end: &str, clusters: &mut [Cluster]) {
+    use std::collections::{HashMap, HashSet};
+    let rows = view::read_clouds(glob, start, end).unwrap_or_else(|e| die(&e));
+    // cell key → the distinct dates that cell was observed CLEAR.
+    let mut clear: HashMap<String, HashSet<String>> = HashMap::new();
+    for (glon, glat, date, cf) in rows {
+        if cf <= s2_flares_core::CLEAR_MAX { clear.entry(s2_flares_core::cell_key(glon, glat)).or_default().insert(date); }
+    }
+    let step = s2_flares_core::GRID_STEP;
+    let (mut rescored, mut joined) = (0usize, 0usize);
+    for cl in clusters.iter_mut() {
+        let mut dates: HashSet<String> = cl.detections.iter().map(|d| d.date.clone()).collect();
+        // the anchor's own cell first; only if it carries no mask rows fall back to the
+        // 3×3 neighbourhood (cell-edge anchor) — avoids inflating the denominator.
+        let own = s2_flares_core::cell_key(cl.lon, cl.lat);
+        let hit = if clear.contains_key(&own) {
+            clear.get(&own).map(|s| { dates.extend(s.iter().cloned()); true }).unwrap_or(false)
+        } else {
+            let mut any = false;
+            for dj in -1..=1 { for di in -1..=1 {
+                if let Some(s) = clear.get(&s2_flares_core::cell_key(cl.lon + di as f64 * step, cl.lat + dj as f64 * step)) {
+                    dates.extend(s.iter().cloned()); any = true;
+                }
+            }}
+            any
+        };
+        if hit { joined += 1; cl.set_observations(dates.len()); rescored += 1; }
+    }
+    eprintln!("clouds: joined {joined} / {} clusters against the cloud mask ({rescored} rescored)", clusters.len());
 }
 
 // the coverage scan + rescore. resumable per-scene SCL sampling at the cluster

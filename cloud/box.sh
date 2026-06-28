@@ -7,8 +7,8 @@
 #   ./box.sh up                       provision the fleet (keypair/secgroup/net/VMs/IPs)
 #   ./box.sh run <detect args>        shard the AOI, detached resumable detect on every member
 #   ./box.sh pull                     rsync every member's per-scene CSVs down to $LOCAL_DATA
-#   ./box.sh archive                  gather all members' CSVs to the head, roll up to
-#                                     s3://$BUCKET/{detections,clusters,coverage}
+#   ./box.sh archive                  gather all members' CSVs+.cld to the head, roll up
+#                                     to s3://$BUCKET/{detections,clusters,clouds}
 #   ./box.sh verify                   prove every AOI feature scanned + 0 errored scenes (per member)
 #   ./box.sh publish                  make that archive a web-map backend: anonymous
 #                                     public-read + CORS, so DuckDB-wasm can read it
@@ -241,19 +241,19 @@ pull(){
 #                each tile file is SELECT DISTINCT over every AOI's CSVs for that tile
 #                (cross-AOI/cross-shard union + dedup), ORDER BY date so row-group date
 #                stats prune within a file.
-#   clusters/    the derived VIEW — s2-flares cluster over the fresh detections/ →
-#                clusters/data.parquet (one row/cluster + nested detections list). the
-#                web map still re-clusters live in wasm for arbitrary windows.
-#   coverage/    the scan FOOTPRINT — coverage/data.parquet, one row per (tile, quarter)
-#                processed + its detection bbox, gating the web map's "Detect" button.
-# FLEET note: each worker holds only its shard's CSVs, so we first GATHER every member's
-# CSVs onto the head (member 0) — a single rollup there sees the whole archive at once,
-# giving a clean per-tile DISTINCT (no cross-box last-write-wins when adjacent terminals
-# share a tile) AND a complete coverage footprint. then duckdb (rollup) + the cli
-# (cluster, with the site-anchored clear-sky persistence scan) both run on the head,
-# in-region, carrying TWO credential sets: gdal /vsis3 reads SCL from eodata (AWS_* from
-# the per-VM profile) for the coverage scan, while duckdb reads detections / writes
-# clusters on the project bucket (S2_S3_* — kept separate so they don't collide).
+#   clouds/      the CLOUD MASK — clouds/data.parquet, one row per (~100 m cell, date)
+#                emitted DURING detection (the persistence denominator folded into the
+#                detection pass; replaces the old coverage/ scan). AOI-agnostic; the scan
+#                footprint derives from it. an internal build artifact (not web-published).
+#   clusters/    the derived VIEW — s2-flares cluster over the fresh detections/, with the
+#                persistence denominator joined from clouds/ → clusters/data.parquet (one
+#                row/cluster + nested detections). the web map re-clusters live in wasm.
+# FLEET note: each worker holds only its shard's CSVs/.cld, so we first GATHER every
+# member's files onto the head (member 0) — a single rollup there sees the whole archive
+# at once, giving a clean per-tile DISTINCT (no cross-box last-write-wins when adjacent
+# terminals share a tile) AND a complete cloud mask. then duckdb (rollup) + the cli
+# (cluster) both run on the head: the cluster step is now pure duckdb on the project
+# bucket (S2_S3_*) — the clouds/ join needs no eodata/gdal, so no second credential set.
 archive(){
   auth
   openstack container show "$BUCKET" >/dev/null 2>&1 || { say "Bucket $BUCKET"; openstack container create "$BUCKET" >/dev/null; }
@@ -265,15 +265,18 @@ archive(){
     say "Gather $(mvm "$i") CSVs → head"
     mssh "$i" "cd $REPO_DIR/$OUT 2>/dev/null && tar cf - . || true" | mssh 0 "mkdir -p $REPO_DIR/$OUT && tar xf - -C $REPO_DIR/$OUT"
   done
-  say "Archive $OUT → s3://$BUCKET/{detections (per-tile parquet),coverage (scan footprint)}"
+  say "Archive $OUT → s3://$BUCKET/{detections (per-tile parquet),clouds (cloud mask)}"
   local b64; b64=$(printf '%s' "$ARCHIVER" | base64 | tr -d '\n')
   mssh 0 "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' OUT='$REPO_DIR/$OUT' bash"
-  say "Cluster view (+ site-anchored clear-sky persistence) → s3://$BUCKET/clusters/data.parquet"
-  mssh 0 "cd $REPO_DIR && . /etc/profile.d/eodata.sh && \
+  say "Cluster view (+ clear-sky persistence, joined against clouds/) → s3://$BUCKET/clusters/data.parquet"
+  # the persistence denominator now folds in via the cloud mask: a spatial join of each
+  # anchor's ~100 m cell against clouds/ — pure duckdb (S2_S3_*), no eodata/gdal, no 2nd
+  # SCL pass. the persistence window equals the detection window (START/END drive both).
+  mssh 0 "cd $REPO_DIR && \
         S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
         S2_S3_ACCESS_KEY='$ak' S2_S3_SECRET_KEY='$sk' \
-        ./target/release/s2-flares cluster --source cdse --concurrency ${COVERAGE_CONCURRENCY:-16} \
-          --archive 's3://$BUCKET/detections/**/*.parquet' --coverage-scan '$OUT/coverage' \
+        ./target/release/s2-flares cluster --concurrency ${COVERAGE_CONCURRENCY:-16} \
+          --archive 's3://$BUCKET/detections/**/*.parquet' --clouds 's3://$BUCKET/clouds/data.parquet' \
           --out 's3://$BUCKET/clusters/data.parquet' --start '${START:-2015-01-01}' --end '${END:-2100-01-01}'"
 }
 
@@ -292,36 +295,35 @@ tiles=$(for f in "$OUT"/*/*.csv; do [ "$(wc -l <"$f")" -gt 1 ] && b=$(basename "
   for m in $tiles; do
     echo "COPY (SELECT DISTINCT * EXCLUDE(mgrs) FROM read_csv('$OUT/*/${m}_*.csv', union_by_name=true) ORDER BY date) TO 's3://$BUCKET/detections/mgrs=$m/data.parquet' (FORMAT parquet);"
   done
-  # coverage/ the scan FOOTPRINT — one row per (tile, quarter) actually processed,
-  # with that tile-quarter's detection bbox. the web map folds these rects into its
-  # "already detected" test so the Detect button only lights over archive gaps. read
-  # over EVERY scene CSV (not just the non-empty tile list): flareless scenes are
-  # header-only so they add no rows — coverage thus UNDER-claims (the safe direction;
-  # Detect stays enabled on a scanned-but-flareless tile, never wrongly disabled).
-  echo "COPY (SELECT mgrs, year(CAST(date AS DATE)) AS y, quarter(CAST(date AS DATE)) AS q,
-        min(lon) AS w, min(lat) AS s, max(lon) AS e, max(lat) AS n, count(*) AS n_det
-        FROM read_csv('$OUT/*/*.csv', union_by_name=true) GROUP BY mgrs, y, q)
-        TO 's3://$BUCKET/coverage/data.parquet' (FORMAT parquet);"
+  # clouds/ the CLOUD MASK — one row per (~100 m cell, date) = glon,glat,date,cloud_frac,
+  # emitted during detection over EVERY scene (incl. flareless/cloudy: the clear-but-unlit
+  # looks that are the honest persistence denominator). AOI-agnostic; overlapping scans of
+  # a cell on a date dedup (DISTINCT). REPLACES coverage/: the cluster step joins each
+  # anchor's cell against this for n_clear_obs (no second SCL pass), and the scan FOOTPRINT
+  # derives from it (which cells/dates were observed). an internal build artifact — kept in
+  # S3 to re-join at a different date window without re-reading SCL; the browser never reads it.
+  echo "COPY (SELECT DISTINCT glon,glat,date,cloud_frac FROM read_csv('$OUT/*/*.cld', union_by_name=true) ORDER BY date) TO 's3://$BUCKET/clouds/data.parquet' (FORMAT parquet);"
 } | "$DDB"
 "$DDB" -c "$S3 SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/detections/**/data.parquet', hive_partitioning=true);"
 EOS
 )
 
 # make the archive a web-map backend: anonymous public-read on detections/* +
-# clusters/* + coverage/* + CORS, so a browser (e.g. DuckDB-wasm) can range-read the
-# parquet directly — scalar cluster pins from clusters/, raw-detection reclustering
-# from detections/, the scan footprint (Detect-button gating) from coverage/. one-time
-# per bucket; needs aws-cli (RadosGW S3 policy/CORS aren't openstack/swift operations).
+# clusters/* + CORS, so a browser (e.g. DuckDB-wasm) can range-read the parquet
+# directly — scalar cluster pins from clusters/, raw-detection reclustering from
+# detections/. clouds/ is an INTERNAL build artifact (the anchor⋈mask join runs at
+# build time, baked into clusters/) so it is NOT published. one-time per bucket; needs
+# aws-cli (RadosGW S3 policy/CORS aren't openstack/swift operations).
 publish(){
   auth
   command -v aws >/dev/null || { echo "publish needs aws-cli (brew install awscli)" >&2; exit 1; }
   local ak sk; read -r ak sk < <(s3creds)
   local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api)
-  say "Publishing s3://$BUCKET/{detections,clusters,coverage} for web-map access (public-read + CORS)"
+  say "Publishing s3://$BUCKET/{detections,clusters} for web-map access (public-read + CORS)"
   "${aws_s3[@]}" put-bucket-cors --bucket "$BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/coverage/*"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
-  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters,coverage}/…"
+  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
+  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters}/…"
 }
 
 # empty the archive bucket (every object; the bucket stays) — e.g. to start fresh
@@ -419,7 +421,7 @@ PY" || rc=1
 launch(){ up; run "$@"; }
 
 # hands-off pipeline: provision the fleet, detect (sharded), prove it, archive to object
-# storage (gather + coverage), pull locally, scale to zero. the archive (S3) and local
+# storage (gather + rollup), pull locally, scale to zero. the archive (S3) and local
 # CSVs persist; only the boxes are ephemeral. `down` fires only when `verify` proves
 # every AOI feature was scanned — a gap keeps the fleet up for a resumable re-run.
 all(){ up; run "$@"

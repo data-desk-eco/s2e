@@ -22,7 +22,9 @@ core/               PURE compute, no I/O — compiles to wasm and links into the
   src/cluster.rs      cross-date spatial clustering (Cluster/DedupedDet) + the
                       spectral glint discriminator + deterministic cluster id hash
   src/score.rs        vision-validated cluster quality score + glint geometry
-  src/coverage.rs     scl clear-sky sampling (the n_clear_obs persistence denominator)
+  src/coverage.rs     scl clear-sky sampling + the ~100 m cloud-mask grid (grid_sites,
+                      cell_key, CoverRow::cloud_frac) — the n_clear_obs denominator,
+                      now emitted as a gridded mask during detection, not a 2nd pass
   src/geo.rs          utm/wgs84, epsg_from_mgrs, bbox helpers
   src/lib.rs          public surface; serde is a feature (off → core is dep-free)
 cli/                native gdal-backed binary — reproduces the old cli.js + cf-run.js
@@ -121,20 +123,26 @@ Two subcommands over one area (`--bbox W,S,E,N`) or many (`--aoi file.geojson`):
 
 - **`detect`** grows the detection archive: search → concurrent gdal detection
   (rayon) → one CSV per scene under `<out>/<id>/<mgrs>_<date>.csv`, file presence ==
-  scene done → resumable. `--source aws` (Element84 COGs, default, no offset) is for
+  scene done → resumable. Alongside each CSV it writes a sibling `.cld` — the per-scene
+  **cloud-mask slice** (`glon,glat,date,cloud_frac` over a ~100 m grid covering the scan
+  window, via `core::grid_sites` + one whole-band SCL read), emitted for EVERY scene incl.
+  flareless/cloudy. That is the clear-sky persistence denominator FOLDED INTO detection —
+  no separate second SCL pass. `--source aws` (Element84 COGs, default, no offset) is for
   local testing; `--source cdse` (eodata JP2, harmonised) is the box.
 - **`cluster`** derives the view: `core::cluster_detections` over the archive
   (`--archive <duckdb glob>`) or a fresh `detect`, written by `--out` extension —
   `.geojson` (journalist) or nested-array parquet / `s3…/clusters/…` (web map);
   omit `--out` for GeoJSON to stdout. DuckDB does the parquet/S3 read+write; Rust
   does the clustering; a flat-CSV handoff bridges them (no native parquet deps).
-  `--coverage-scan <dir>` adds the SOTA persistence pass (permian-flaring): after
-  clustering, sample SCL (`core::cover_sites`) at every cluster anchor over every
-  acquisition (per-tile STAC search → resumable per-scene CSV in `<dir>`), then
-  `Cluster::set_observations` rescores each site with its measured `n_clear_obs`
-  denominator → real `persistence = n_dates / n_clear_obs`. The min-dates floor stays
-  recall-first (drop true singletons only, `n_dates ≥ 2`); persistence is a continuous
-  score term, never a hard count gate — a count gate discards dim-but-persistent flares.
+  `--clouds <glob>` adds the SOTA persistence (permian-flaring) by a **spatial join**:
+  snap each cluster anchor to its ~100 m cell, `n_clear_obs = distinct dates where that
+  cell's `cloud_frac ≤ 0.10`` (∪ the site's own detection dates), then
+  `Cluster::set_observations` rescores → real `persistence = n_dates / n_clear_obs`.
+  Pure DuckDB+Rust, no eodata/gdal, no re-read. (The legacy `--coverage-scan <dir>` —
+  re-sampling SCL at every anchor over every acquisition — is kept only to cross-check
+  the fold-in; same `core::cover_sites` classifier, so they agree.) The min-dates floor
+  stays recall-first (drop true singletons only, `n_dates ≥ 2`); persistence is a
+  continuous score term, never a hard count gate — a count gate discards dim-but-persistent flares.
 
 Detector thresholds default recall-first; tighten any single variable with its own
 flag (`--b12-min`, `--b11-min`, `--peak-b12-min`, `--contrast-ratio`,
@@ -171,26 +179,28 @@ co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2` direc
   session, non-interactive when a gitignored `.env` sets `CLOUDFERRO_PASSWORD` +
   `CLOUDFERRO_TOTP_SECRET` (single-quote the values). The openrc session token lasts
   hours; the TOTP code is spent once per invocation.
-- **`archive`** rolls the per-scene CSVs up into BOTH published artifacts in one
-  pass. `detections/`: a per-tile parquet collection on CloudFerro object storage
+- **`archive`** rolls the per-scene CSVs+`.cld` up into THREE artifacts in one pass.
+  `detections/`: a per-tile parquet collection on CloudFerro object storage
   (`s3://$BUCKET/detections/mgrs=…/data.parquet`), one deterministic-key parquet per
   MGRS tile (idempotent PUT; a `SELECT DISTINCT … ORDER BY date` union of that tile's
   scene CSVs), queryable in one `read_parquet('s3://…/**/*.parquet',
-  hive_partitioning=true)`. `clusters/`: the derived view (`clusters/data.parquet`),
-  produced by running `s2-flares cluster --coverage-scan` over the fresh `detections/`
-  full-window — which also runs the site-anchored clear-sky persistence pass (SCL
-  sampled at each anchor over every acquisition → `n_clear_obs`). DuckDB (rollup,
-  cluster i/o) and the cli (cluster) both run on the box (in-region); the cluster step
-  carries TWO credential sets at once — duckdb reads detections / writes clusters on
-  the project bucket via `S2_S3_*` env (from `openstack ec2 credentials`), while gdal
-  `/vsis3` reads SCL from `eodata` via `AWS_*` (per-VM profile) for the coverage scan;
-  the two are kept separate so they don't collide. The box is disposable, S3 persists.
+  hive_partitioning=true)`. `clouds/`: the cloud mask (`clouds/data.parquet`, `SELECT
+  DISTINCT glon,glat,date,cloud_frac` over the `.cld` files) — AOI-agnostic, an INTERNAL
+  build artifact (not web-published), kept in S3 to re-join at another date window
+  without re-reading SCL. `clusters/`: the derived view (`clusters/data.parquet`),
+  produced by running `s2-flares cluster --clouds` over the fresh `detections/`
+  full-window — the persistence denominator is a **spatial join** of each anchor's cell
+  against `clouds/` (no second SCL pass). DuckDB (rollup) and the cli (cluster) both run
+  on the box in-region; the cluster step is now pure DuckDB on the project bucket via
+  `S2_S3_*` env (from `openstack ec2 credentials`) — the clouds join needs no eodata/gdal,
+  so no second credential set. The box is disposable, S3 persists.
 - **`publish`** makes the archive a web-map backend: anonymous public-read on
   `detections/*` + `clusters/*` + CORS (via aws-cli — RadosGW S3 ops), so DuckDB-wasm
   reads the parquet directly over HTTP range requests — scalar pins from `clusters/`,
   live reclustering from `detections/` (the hive layout maps each viewport tile
   straight to its object URL, no LIST, date filtered in-file via row-group stats).
-  Warsaw-only, no CDN — egress ~€0.0064/GB.
+  `clouds/` is NOT published (the anchor⋈mask join is build-time, baked into `clusters/`;
+  the browser reads the baked persistence). Warsaw-only, no CDN — egress ~€0.0064/GB.
 
 ## Consumers
 

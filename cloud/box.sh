@@ -347,32 +347,6 @@ wipe(){
   echo "  bucket emptied."
 }
 
-# one-shot migration: repartition a LEGACY flat clusters/data.parquet (pre-mgrs layout)
-# into clusters/mgrs=…/ in place, no re-detect. the old file has no mgrs column, so we
-# recover each cluster's tile by joining its anchor (lon,lat) back to detections/ (where
-# mgrs is the hive key) — exactly the anchor's tile the pipeline now bakes in. stage via a
-# local parquet so the partitioned write never overlaps the read, then drop the flat file.
-repartition(){
-  auth
-  command -v aws >/dev/null || { echo "repartition needs aws-cli (brew install awscli)" >&2; exit 1; }
-  local ak sk; read -r ak sk < <(s3creds)
-  local DDB; DDB=$(command -v duckdb || echo ~/.duckdb/cli/latest/duckdb)
-  local S3="INSTALL httpfs; LOAD httpfs;
-    SET s3_endpoint='s3.$OS_REGION_NAME.cloudferro.com'; SET s3_region='$OS_REGION_NAME';
-    SET s3_url_style='path'; SET s3_use_ssl=true;
-    SET s3_access_key_id='$ak'; SET s3_secret_access_key='$sk';"
-  say "Repartitioning s3://$BUCKET/clusters/data.parquet → clusters/mgrs=…/ (mgrs recovered from detections/)"
-  local tmp=/tmp/reclusters.parquet
-  "$DDB" -c "$S3 COPY (SELECT c.*, d.mgrs FROM read_parquet('s3://$BUCKET/clusters/data.parquet') c \
-    LEFT JOIN (SELECT DISTINCT lon, lat, mgrs FROM read_parquet('s3://$BUCKET/detections/**/*.parquet', hive_partitioning=true)) d \
-    ON c.lon = d.lon AND c.lat = d.lat) TO '$tmp' (FORMAT parquet);"
-  "$DDB" -c "$S3 COPY (SELECT * FROM read_parquet('$tmp')) TO 's3://$BUCKET/clusters' (FORMAT parquet, PARTITION_BY (mgrs), OVERWRITE);"
-  rm -f "$tmp"
-  env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME" \
-    aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3 rm "s3://$BUCKET/clusters/data.parquet"
-  "$DDB" -c "$S3 SELECT mgrs, count(*) AS clusters FROM read_parquet('s3://$BUCKET/clusters/**/*.parquet', hive_partitioning=true) GROUP BY mgrs ORDER BY mgrs;"
-}
-
 # run cost, instantly: CloudFerro bills the flavor by the hour, so FLEET × uptime ×
 # RATE is a deterministic local estimate — the billing portal aggregates daily, far
 # too coarse/slow to reflect a run in flight. assumes auth; `cost` wraps it with auth.
@@ -457,7 +431,7 @@ all(){ up; run "$@"
 
 case "${1:-}" in
   up) up;; ip) ip;; ssh) shift; go_ssh "${1:-0}";; cost) cost;; down) down;;
-  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; repartition) repartition;; wipe) wipe;; parity) parity;;
+  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; wipe) wipe;; parity) parity;;
   launch) shift; launch "$@";; all) shift; all "$@";;
-  *) echo "usage: $0 {up | run <args> | launch <args> | watch | pull | archive | verify | publish | repartition | wipe | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
+  *) echo "usage: $0 {up | run <args> | launch <args> | watch | pull | archive | verify | publish | wipe | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
 esac

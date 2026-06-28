@@ -160,9 +160,17 @@ run(){
   say "Fleet detached & resumable — streaming progress (Ctrl-C is safe, the runs continue)"
   watch
 }
-# one member: upload its shard, build, launch the detached detect. run under `&`.
+# one member: wait for cloud-init (a FRESH box installs rust/gdal + does a first build,
+# ~5-8min, AFTER `server create --wait` returns ACTIVE — so launch/all can't build until
+# the toolchain + a built tree exist), upload its shard, rebuild, launch the detached
+# detect. run under `&`. the readiness poll also rides out sshd not-yet-up (mssh fails →
+# retry); capped at ~20min so a wedged boot surfaces rather than hangs the fleet.
 start_member(){
-  local i=$1 aoi=$2 feat=$3 cudaenv=$4; shift 4; local rest=("$@") ip aoiarg=""; ip=$(mip "$i")
+  local i=$1 aoi=$2 feat=$3 cudaenv=$4; shift 4; local rest=("$@") ip aoiarg="" w=0; ip=$(mip "$i")
+  say "  [$i] waiting for cloud-init (rust/gdal/first build)…"
+  until mssh "$i" 'test -f "$HOME/.cargo/env" && test -x '"$REPO_DIR"'/target/release/s2-flares' 2>/dev/null; do
+    w=$((w+1)); [ "$w" -gt 120 ] && { echo "  [$i] not ready after ~20min — check ./box.sh ssh $i" >&2; return 1; }; sleep 10
+  done
   if [ -n "$aoi" ]; then
     scp -q $SSHOPTS -i "$KEYFILE" "/tmp/_shard-$i.geojson" "eouser@$ip:$REPO_DIR/_aoi.geojson"
     aoiarg="--aoi _aoi.geojson"; fi

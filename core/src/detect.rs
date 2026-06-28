@@ -27,6 +27,10 @@ pub struct Thresholds {
     pub background_floor: f64,
     pub peakedness_min: f64,
     pub saturation: f64,
+    /// absolute b12 reflectance floor for a pixel to count as combustion-HOT — the
+    /// flare hot-core boundary, independent of the loose detection mask. separates a
+    /// real flare (b12 ≫ this) from a merely warm facility surface (~0.25–0.4).
+    pub hot_floor: f64,
     pub max_pixels: f64,
     pub large_pixels: f64,
     pub large_b12_min: f64,
@@ -46,7 +50,7 @@ impl Default for Thresholds {
     fn default() -> Self {
         Thresholds {
             b12_min: 0.25, b11_min: 0.15, peak_b12_min: 0.30, contrast_ratio: 2.0,
-            background_floor: 0.10, peakedness_min: 1.0, saturation: 1.0, max_pixels: 100000.0,
+            background_floor: 0.10, peakedness_min: 1.0, saturation: 1.0, hot_floor: 0.50, max_pixels: 100000.0,
             large_pixels: 100000.0, large_b12_min: 0.0, warm_fraction: 0.5, warm_max_pixels: 100000.0,
             single_pixel_min: 0.25, max_cloud_local: 0.95, cloud_free_thresh: 0.30,
         }
@@ -91,8 +95,14 @@ pub struct Detection {
     pub peak_b11: Option<f64>,
     pub b12_b11_ratio: Option<f64>,
     pub peakedness: f64,
+    /// flare HOT-CORE area: pixels contiguously above `hot_floor` grown from the
+    /// peak — the flare itself, NOT the loose spectral-mask component (which floods
+    /// the whole warm facility into tens of thousands of px). a volume signal.
     pub pixels: u32,
-    pub warm_size: u32,
+    /// integrated excess swir radiance over the hot core: Σ(b12 − background). the
+    /// primary volume proxy — it folds intensity × area, and (unlike a pegged
+    /// `max_b12`) keeps ranking flares whose core has saturated by their spread.
+    pub radiance: f64,
     pub saturated: u8,
     pub sun_elevation: Option<f64>,
     pub sun_azimuth: Option<f64>,
@@ -184,28 +194,34 @@ pub fn label_connected_components(mask: &[u8], width: usize, height: usize) -> (
     (labels, next - 1)
 }
 
-// grow the contiguous region above `warm_thresh` from the peak, capped at cap.
-fn warm_region_size(b12: &[f64], peak_idx: usize, warm_thresh: f64, w: usize, h: usize, cap: usize) -> usize {
-    if b12[peak_idx] <= warm_thresh { return 0; }
+// the flare HOT CORE: within THIS detection's connected component (`label_id`), the
+// pixels contiguously above `hot_thresh` grown from the peak (always counting the
+// peak itself, so ≥1 px), capped at `cap`. returns its pixel count AND its integrated
+// excess radiance Σ(b12 − bg). this measures the flare, decoupled from the loose
+// spectral-mask component — which 4-connects the peak across the entire warm
+// facility/glint field into a meaningless count. the component restriction stops a
+// dim glint peak's core from leaking into an adjacent flare's bright pixels.
+fn hot_core(b12: &[f64], labels: &[i32], label_id: i32, peak_idx: usize, hot_thresh: f64, bg: f64, w: usize, h: usize, cap: usize) -> (usize, f64) {
     let mut visited = vec![false; b12.len()];
     let mut q = VecDeque::new();
     q.push_back(peak_idx);
     visited[peak_idx] = true;
-    let mut size = 0usize;
+    let (mut size, mut rad) = (0usize, 0f64);
     while let Some(idx) = q.pop_front() {
         size += 1;
-        if size > cap { return size; }
+        rad += (b12[idx] - bg).max(0.0);
+        if size > cap { return (size, rad); }
         let r = idx / w;
         let c = idx % w;
         let visit = |n: usize, q: &mut VecDeque<usize>, visited: &mut [bool]| {
-            if !visited[n] && b12[n] > warm_thresh { visited[n] = true; q.push_back(n); }
+            if !visited[n] && labels[n] == label_id && b12[n] > hot_thresh { visited[n] = true; q.push_back(n); }
         };
         if r > 0 { visit(idx - w, &mut q, &mut visited); }
         if r < h - 1 { visit(idx + w, &mut q, &mut visited); }
         if c > 0 { visit(idx - 1, &mut q, &mut visited); }
         if c < w - 1 { visit(idx + 1, &mut q, &mut visited); }
     }
-    size
+    (size, rad)
 }
 
 /// run swir flare detection on one block → (detections, cloud_free).
@@ -304,9 +320,12 @@ pub fn detect_block(
 
         let peak_row = peak_idx / w;
         let peak_col = peak_idx % w;
-        let warm_thresh = peak_b12 * t.warm_fraction;
-        let warm_size = warm_region_size(&b12, peak_idx, warm_thresh, w, h, t.warm_max_pixels as usize);
-        if warm_size as f64 > t.warm_max_pixels { continue; }
+        // the flare's hot core, not the loose component: contiguous-from-peak above
+        // max(peak·warm_fraction, hot_floor). the absolute floor bounds dim diffuse
+        // glint/haze fields (which a purely peak-relative threshold lets flood).
+        let hot_thresh = (peak_b12 * t.warm_fraction).max(t.hot_floor);
+        let (core_px, radiance) = hot_core(&b12, &labels, label_id, peak_idx, hot_thresh, median_bg, w, h, t.warm_max_pixels as usize);
+        if core_px as f64 > t.warm_max_pixels { continue; }
 
         let col_frac = (peak_col as f64 + 0.5) / w as f64;
         let row_frac = (peak_row as f64 + 0.5) / h as f64;
@@ -327,8 +346,8 @@ pub fn detect_block(
             peak_b11: Some(peak_b11),
             b12_b11_ratio: Some(ratio),
             peakedness: peak_b12 / avg_b12,
-            pixels: n_pixels,
-            warm_size: warm_size as u32,
+            pixels: core_px as u32,
+            radiance,
             saturated: if peak_b12 >= t.saturation { 1 } else { 0 },
             sun_elevation: meta.sun_elevation,
             sun_azimuth: meta.sun_azimuth,

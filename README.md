@@ -23,7 +23,10 @@ Two artifacts, and the key design decision is the relationship between them:
 - **Detections** are the archive — the source of truth. One row per detection,
   carrying the full discriminating metric set so any gate is reconstructable
   downstream: `max_b12, avg_b12, peak_b11, b12_b11_ratio, peakedness, pixels,
-  warm_size, saturated, sun_elevation, sun_azimuth, glint_angle, glint_score`.
+  radiance, saturated, sun_elevation, sun_azimuth, glint_angle, glint_score`.
+  `pixels` is the flare HOT-CORE area (combustion-hot pixels grown from the peak,
+  not the loose mask's whole-facility flood) and `radiance` is its integrated SWIR
+  excess — together a volume signal that keeps ranking flares once `max_b12` saturates.
   Resumability is the per-scene CSV layer (one `<mgrs>_<date>.csv`, presence == done
   → resumable); the published archive is a per-tile rollup of those CSVs,
   `detections/mgrs=…/data.parquet` (date a column, not a path level) — one parquet

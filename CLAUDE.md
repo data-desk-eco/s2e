@@ -18,7 +18,9 @@ resumability, the parquet hive layout).
 Cargo.toml          workspace (core + cli + wasm)
 core/               PURE compute, no I/O — compiles to wasm and links into the cli.
   src/detect.rs       block detector + tunable Thresholds (recall-first defaults;
-                      every gate a parameter), screen_clouds, components, blocks
+                      every gate a parameter), screen_clouds, components, blocks +
+                      hot_core (the flare's combustion-hot area + integrated radiance:
+                      pixels/radiance, the volume signal — NOT the loose-mask flood)
   src/cluster.rs      cross-date spatial clustering (Cluster/DedupedDet) + the
                       spectral glint discriminator + deterministic cluster id hash
   src/score.rs        vision-validated cluster quality score + glint geometry
@@ -93,6 +95,15 @@ This is the central design decision; everything else follows from it.
 - **The spectral mask always runs; the morphological gates are the tunable part.**
   B12/B11 SWIR-hot + background contrast + NHI-SWIR/saturation is what makes this
   flare detection, not bright-pixel detection.
+- **Flare SIZE/VOLUME comes from the hot core, never the detection mask.** The loose
+  recall-first mask 4-connects a flare's peak across the entire warm facility (a single
+  Ras Laffan flare flooded to ~36k px ≈ 15 km²). So `pixels`/`radiance` are measured on
+  the flare's own connected component restricted to combustion-hot pixels (B12 above
+  `hot_floor`, grown from the peak): `pixels` is the hot-core area, `radiance` is its
+  integrated SWIR excess Σ(b12 − background). Volume estimation reads these two plus
+  `max_b12`/`saturated` — and because `max_b12` pegs at saturation, `radiance` (area ×
+  intensity) is what keeps ranking the biggest flares once their cores clip. The mask's
+  flooded component count is discarded; it never had a downstream use but as this number.
 - **cluster_detections is a pure function** with no global state; callers pass a
   cloud-free observation count for the persistence denominator, or `None` to skip.
   `Cluster::set_observations(n_clear_obs)` re-attaches a per-site measured denominator

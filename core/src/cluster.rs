@@ -56,6 +56,7 @@ pub struct DedupedDet {
     pub max_b12: f64,
     pub peak_b11: Option<f64>,
     pub pixels: u32,
+    pub radiance: f64,
     pub sun_elevation: Option<f64>,
     pub sun_azimuth: Option<f64>,
     pub lon: f64,
@@ -71,6 +72,9 @@ pub struct Cluster {
     pub lat: f64,
     pub max_b12: f64,
     pub avg_b12: f64,
+    /// median per-date hot-core radiance — a representative flare-volume proxy for
+    /// the site (the full per-date series is on `detections`).
+    pub radiance: f64,
     pub detection_count: u32,
     pub date_count: u32,
     pub first_date: String,
@@ -206,11 +210,21 @@ fn deduped_out(d: &Detection) -> DedupedDet {
         max_b12: d.max_b12,
         peak_b11: d.peak_b11,
         pixels: d.pixels,
+        radiance: d.radiance,
         sun_elevation: d.sun_elevation,
         sun_azimuth: d.sun_azimuth,
         lon: d.lon,
         lat: d.lat,
     }
+}
+
+// median of a slice (0.0 when empty) — the cluster's representative radiance.
+fn median(xs: &[f64]) -> f64 {
+    if xs.is_empty() { return 0.0; }
+    let mut v = xs.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let m = v.len() / 2;
+    if v.len() % 2 == 0 { (v[m - 1] + v[m]) / 2.0 } else { v[m] }
 }
 
 /// spatially cluster cross-date detections into persistent flare sites.
@@ -235,6 +249,7 @@ pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Ve
                 lat: det.lat,
                 max_b12: det.max_b12,
                 avg_b12: det.max_b12,
+                radiance: det.radiance,
                 detection_count: 1,
                 date_count: 1,
                 first_date: det.date.clone(),
@@ -318,6 +333,7 @@ pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Ve
 
         let avg_b12 = deduped.iter().map(|d| d.max_b12).sum::<f64>() / deduped.len() as f64;
         if avg_b12 < opts.min_avg_b12 { continue; }
+        let radiance = median(&deduped.iter().map(|d| d.radiance).collect::<Vec<_>>());
 
         // anchor = highest b12 detection (first wins on tie).
         let mut anchor = deduped[0];
@@ -347,6 +363,7 @@ pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Ve
             lat: anchor.lat,
             max_b12: anchor.max_b12,
             avg_b12,
+            radiance,
             detection_count: deduped.len() as u32,
             date_count: deduped.len() as u32,
             first_date,

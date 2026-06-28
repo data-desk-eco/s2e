@@ -143,6 +143,10 @@ struct Knobs {
     /// Spatial peakedness gate.
     #[arg(long, default_value_t = 1.0)]
     peakedness_min: f64,
+    /// Hot-core B12 floor: the `pixels`/`radiance` flare-size measurement counts
+    /// only pixels above this (combustion-hot), not the loose detection mask.
+    #[arg(long, default_value_t = 0.50)]
+    hot_floor: f64,
 }
 
 impl Common {
@@ -154,7 +158,7 @@ impl Common {
         Thresholds {
             b12_min: k.b12_min, b11_min: k.b11_min, peak_b12_min: k.peak_b12_min,
             contrast_ratio: k.contrast_ratio, background_floor: k.background_floor,
-            peakedness_min: k.peakedness_min, ..Default::default()
+            peakedness_min: k.peakedness_min, hot_floor: k.hot_floor, ..Default::default()
         }
     }
     fn harmonize(&self) -> bool { self.source != "aws" } // aws cogs pre-harmonised; eodata jp2 isn't
@@ -223,11 +227,11 @@ fn scene_row(d: &Detection) -> String {
     [
         fmt(d.lon), fmt(d.lat), d.date.clone(), d.mgrs.clone(), d.scene.clone(),
         fmt(d.max_b12), fmt(d.avg_b12), fmt_opt(d.peak_b11), fmt_opt(d.b12_b11_ratio),
-        fmt(d.peakedness), d.pixels.to_string(), d.warm_size.to_string(), d.saturated.to_string(),
+        fmt(d.peakedness), d.pixels.to_string(), fmt(d.radiance), d.saturated.to_string(),
         fmt_opt(d.sun_elevation), fmt_opt(d.sun_azimuth), fmt_opt(d.glint_angle), fmt_opt(d.glint_score),
     ].join(",")
 }
-const SCENE_HEADER: &str = "lon,lat,date,mgrs,scene,max_b12,avg_b12,max_b11,b12_b11_ratio,peakedness,pixels,warm_size,saturated,sun_elevation,sun_azimuth,glint_angle,glint_score";
+const SCENE_HEADER: &str = "lon,lat,date,mgrs,scene,max_b12,avg_b12,max_b11,b12_b11_ratio,peakedness,pixels,radiance,saturated,sun_elevation,sun_azimuth,glint_angle,glint_score";
 
 fn main() {
     let cli = Cli::parse();

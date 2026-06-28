@@ -4,20 +4,30 @@
 # /vsis3 with per-VM creds from the metadata service — `s2-flares detect --source
 # cdse …` needs no other secrets. duckdb stays for the archive step. (no node: the
 # detector is now the rust core compiled native, not node + geotiff/gdal-async.)
-package_update: true
-packages: [git, gdal-bin, libgdal-dev, clang, libclang-dev, pkg-config, build-essential, ca-certificates, curl, unzip, python3, jq]
+#
+# EVERY heavy step is GUARDED by a presence check, so this one file serves two boots:
+#   - stock Ubuntu (cold): nothing present → full apt/rust/duckdb/clone/build (~5-8min).
+#     `box.sh image` bakes that finished disk into the golden snapshot $BASEIMG.
+#   - golden $BASEIMG (warm): toolchain + built tree already on disk → guards no-op, so
+#     boot is just the (ungated, per-VM) eodata creds step → ready in well under a minute.
+# the per-VM eodata creds are NEVER guarded — they differ per box and must be (re)written
+# every boot; `box.sh image` strips them before the snapshot so none are baked in.
 runcmd:
+  # apt deps (gdal + clang/libclang for the gdal-sys bindgen build + duckdb's curl/unzip)
+  - command -v gdalinfo >/dev/null || { export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y git gdal-bin libgdal-dev clang libclang-dev pkg-config build-essential ca-certificates curl unzip python3 jq; }
   # duckdb as eouser, symlinked onto the global PATH (the installer is per-user)
-  - su - eouser -c 'curl -fsSL https://install.duckdb.org | bash'
-  - ln -sf /home/eouser/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb
-  # rust toolchain (eouser), clone, and build the native cli (gdal-sys uses bindgen,
-  # hence clang/libclang). only the cli package → no wasm32 target needed on the box.
-  - su - eouser -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
-  - su - eouser -c 'git clone https://github.com/data-desk-eco/s2-flares.git s2-flares && cd s2-flares && . $HOME/.cargo/env && cargo build --release -p s2-flares-cli'
+  - command -v duckdb >/dev/null || { su - eouser -c 'curl -fsSL https://install.duckdb.org | bash'; ln -sf /home/eouser/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb; }
+  # rust toolchain (eouser)
+  - test -f /home/eouser/.cargo/env || su - eouser -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
+  # clone + build the native cli. start_member git-pulls + incrementally rebuilds for
+  # freshness, so this just needs a working tree + binary to EXIST (the readiness gate);
+  # a golden boot already has both → both steps skip.
+  - test -d /home/eouser/s2-flares || su - eouser -c 'git clone https://github.com/data-desk-eco/s2-flares.git s2-flares'
+  - test -x /home/eouser/s2-flares/target/release/s2-flares || su - eouser -c 'cd s2-flares && . $HOME/.cargo/env && cargo build --release -p s2-flares-cli'
   - ln -sf /home/eouser/s2-flares/target/release/s2-flares /usr/local/bin/s2-flares
-  # WAW3-2 eodata access: per-VM S3 keys + endpoint, served by the metadata
-  # service. (the old anonymous data.cloudferro.com/CLOUDFERRO:PUBLIC pair is a
-  # different network — unreachable here and it rejects those keys.)
+  # WAW3-2 eodata access: per-VM S3 keys + endpoint, served by the metadata service.
+  # ALWAYS runs (creds are per-box). the old anonymous data.cloudferro.com/CLOUDFERRO:
+  # PUBLIC pair is a different network — unreachable here and it rejects these keys.
   - |
     curl -s http://169.254.169.254/openstack/latest/vendor_data2.json | python3 -c '
     import sys, json

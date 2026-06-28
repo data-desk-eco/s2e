@@ -4,6 +4,8 @@
 # FLEET by default: bulk runs fan out across FLEET (default 4) VMs in parallel, the
 # AOI sharded one slice per member; a bbox/no-aoi run can't be split so it forces 1.
 #
+#   ./box.sh image                    bake the golden disk image once (full cold build →
+#                                     snapshot); later `up`s auto-boot from it in <1min
 #   ./box.sh up                       provision the fleet (keypair/secgroup/net/VMs/IPs)
 #   ./box.sh run <detect args>        shard the AOI, detached resumable detect on every member
 #   ./box.sh pull                     rsync every member's per-scene CSVs down to $LOCAL_DATA
@@ -43,7 +45,9 @@ fi
 : "${VM:=s2-flares}"            # base name; fleet members are $VM-0 … $VM-(FLEET-1)
 : "${FLEET:=4}"                 # fleet size for bulk (--aoi) runs; a bbox run forces 1
 : "${FLAVOR:=eo1.large}"
-: "${IMAGE:=Ubuntu 22.04 LTS}"
+: "${BASEOS:=Ubuntu 22.04 LTS}"   # stock distro for a cold build / for baking the golden image
+: "${BASEIMG:=s2-flares-base}"    # golden snapshot baked by `image`; auto-booted from if it exists
+: "${IMAGE:=}"                    # boot image; empty → resolve_image() picks $BASEIMG or $BASEOS
 : "${KEYPAIR:=s2-flares}"
 : "${KEYFILE:=$HOME/.ssh/id_ed25519}"
 : "${SECGROUP:=s2-flares}"
@@ -89,11 +93,9 @@ auth(){
   [ -n "${OS_TOKEN:-}" ] || { echo "auth failed: no keystone token — wrong password/TOTP (check .env), or token-issue rejected" >&2; exit 1; }
 }
 
-# provision shared infra once (keypair/secgroup/network), then boot the FLEET members
-# IN PARALLEL — each first boot is ~5min, so fan-out is the whole point. each member
-# gets a floating IP cached in .box-ip-<i>; an existing member is reused (idempotent).
-up(){
-  auth
+# ensure the shared infra exists (idempotent): keypair, ssh-only secgroup, private
+# net + router to the external gateway. shared by `up` and `image`.
+infra(){
   say "Keypair $KEYPAIR"
   [ -f "$KEYFILE" ] || ssh-keygen -t ed25519 -N '' -f "$KEYFILE" >/dev/null
   openstack keypair show "$KEYPAIR" >/dev/null 2>&1 || openstack keypair create --public-key "$KEYFILE.pub" "$KEYPAIR" >/dev/null
@@ -108,10 +110,45 @@ up(){
     openstack router create "$NET-rtr" >/dev/null
     openstack router set --external-gateway "$EXTNET" "$NET-rtr" >/dev/null
     openstack router add subnet "$NET-rtr" "$NET-sub" >/dev/null; }
+}
+# pick the boot image: an explicit IMAGE (incl. the gpu path) wins; else the golden
+# $BASEIMG snapshot if `image` has baked one (warm boot, <1min), else the stock distro
+# (cold first build). needs auth (a glance lookup) — callers run `auth` first.
+resolve_image(){
+  [ -n "$IMAGE" ] && return
+  if openstack image show "$BASEIMG" >/dev/null 2>&1; then IMAGE=$BASEIMG; say "Image $BASEIMG (golden → fast boot)"
+  else IMAGE=$BASEOS; say "Image $BASEOS (no golden image — cold build; bake one with ./box.sh image)"; fi
+}
+
+# provision shared infra once, then boot the FLEET members IN PARALLEL — fan-out is the
+# point. each member gets a floating IP cached in .box-ip-<i>; an existing member is
+# reused (idempotent). boot is ~5min on the stock distro, <1min from the golden image.
+up(){
+  auth; infra; resolve_image
   local netid eoid; netid=$(openstack network show "$NET" -f value -c id); eoid=$(openstack network show "$EODATANET" -f value -c id)
   say "Booting fleet of $FLEET ($FLAVOR) in parallel — a few minutes…"
   local i; for i in $(seq 0 $((FLEET-1))); do boot_member "$i" "$netid" "$eoid" & done; wait
-  printf '\n\033[1;32m✓ provisioned %s members\033[0m  →  ./box.sh ssh [i]   (first boot ~5min: rust / gdal / duckdb / build)\n' "$FLEET"
+  printf '\n\033[1;32m✓ provisioned %s members\033[0m  →  ./box.sh ssh [i]\n' "$FLEET"
+}
+
+# bake/refresh the golden image: boot ONE stock box, let cloud-init do the full cold
+# install+build, strip its per-VM creds + cloud-init state, snapshot the disk to $BASEIMG,
+# then tear the box down. afterwards every `up` auto-boots from $BASEIMG (resolve_image),
+# where cloud-init's guards no-op against the on-disk toolchain/tree → a member is ready in
+# well under a minute (only the per-VM creds + start_member's incremental rebuild run live).
+image(){
+  auth; infra
+  local netid eoid; netid=$(openstack network show "$NET" -f value -c id); eoid=$(openstack network show "$EODATANET" -f value -c id)
+  IMAGE=$BASEOS
+  say "Baking $BASEIMG from $BASEOS — full cold install+build, ~8min…"
+  boot_member img "$netid" "$eoid"
+  wait_ready img || { echo "cloud-init didn't finish on $(mvm img) — ./box.sh ssh img" >&2; return 1; }
+  say "Stripping per-VM creds + cloud-init state, then snapshotting → $BASEIMG"
+  mssh img 'sudo rm -f /etc/profile.d/eodata.sh && sudo cloud-init clean --logs'
+  openstack image delete "$BASEIMG" >/dev/null 2>&1 || true   # replace any prior bake
+  openstack server image create --name "$BASEIMG" --wait "$(mvm img)" >/dev/null
+  down_member img; rm -f .box-ip-img
+  printf '\n\033[1;32m✓ baked %s — every ./box.sh up now boots from it\033[0m\n' "$BASEIMG"
 }
 # one member: boot (idempotent) + attach a floating IP → .box-ip-<i>. run under `&`.
 boot_member(){
@@ -164,17 +201,23 @@ run(){
   say "Fleet detached & resumable — streaming progress (Ctrl-C is safe, the runs continue)"
   watch
 }
-# one member: wait for cloud-init (a FRESH box installs rust/gdal + does a first build,
-# ~5-8min, AFTER `server create --wait` returns ACTIVE — so launch/all can't build until
-# the toolchain + a built tree exist), upload its shard, rebuild, launch the detached
-# detect. run under `&`. the readiness poll also rides out sshd not-yet-up (mssh fails →
-# retry); capped at ~20min so a wedged boot surfaces rather than hangs the fleet.
-start_member(){
-  local i=$1 aoi=$2 feat=$3 cudaenv=$4; shift 4; local rest=("$@") ip aoiarg="" w=0; ip=$(mip "$i")
-  say "  [$i] waiting for cloud-init (rust/gdal/first build)…"
+# one member: wait_ready for cloud-init (a stock box installs rust/gdal + first build,
+# AFTER `server create --wait` returns ACTIVE — so launch/all can't build until the
+# toolchain + a built tree exist; a golden-image box clears this near-instantly), upload
+# its shard, rebuild, launch the detached detect. run under `&`.
+# poll until cloud-init has produced a working toolchain + built tree (and rides out sshd
+# not-yet-up: mssh fails → retry). cold box ~5-8min; a golden-image boot passes almost at
+# once. capped ~20min so a wedged boot surfaces. $1 = member index (numeric or 'img').
+wait_ready(){
+  local i=$1 w=0
   until mssh "$i" 'test -f "$HOME/.cargo/env" && test -x '"$REPO_DIR"'/target/release/s2-flares' 2>/dev/null; do
-    w=$((w+1)); [ "$w" -gt 120 ] && { echo "  [$i] not ready after ~20min — check ./box.sh ssh $i" >&2; return 1; }; sleep 10
+    w=$((w+1)); [ "$w" -gt 120 ] && return 1; sleep 10
   done
+}
+start_member(){
+  local i=$1 aoi=$2 feat=$3 cudaenv=$4; shift 4; local rest=("$@") ip aoiarg=""; ip=$(mip "$i")
+  say "  [$i] waiting for cloud-init (rust/gdal/first build)…"
+  wait_ready "$i" || { echo "  [$i] not ready after ~20min — check ./box.sh ssh $i" >&2; return 1; }
   if [ -n "$aoi" ]; then
     scp -q $SSHOPTS -i "$KEYFILE" "/tmp/_shard-$i.geojson" "eouser@$ip:$REPO_DIR/_aoi.geojson"
     aoiarg="--aoi _aoi.geojson"; fi
@@ -430,8 +473,8 @@ all(){ up; run "$@"
   else say "verify found unscanned AOI features — fleet kept up. re-run (resumable), then ./box.sh archive && ./box.sh down"; fi; }
 
 case "${1:-}" in
-  up) up;; ip) ip;; ssh) shift; go_ssh "${1:-0}";; cost) cost;; down) down;;
+  up) up;; image) image;; ip) ip;; ssh) shift; go_ssh "${1:-0}";; cost) cost;; down) down;;
   run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; wipe) wipe;; parity) parity;;
   launch) shift; launch "$@";; all) shift; all "$@";;
-  *) echo "usage: $0 {up | run <args> | launch <args> | watch | pull | archive | verify | publish | wipe | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
+  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | pull | archive | verify | publish | wipe | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
 esac

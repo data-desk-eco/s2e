@@ -175,13 +175,26 @@ clustering implementation to drift.
 The same `core`, off US infrastructure: bulk detection on a CloudFerro WAW3-2 box
 co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2` directly.
 
-- **`cloud/box.sh`** is the whole pipeline, one script: `up` (provision) →
+- **`cloud/box.sh`** is the whole pipeline, one script: `image` (bake the golden disk
+  image once, optional) → `up` (provision) →
   `run <detect args>` (detached, resumable; rebuilds the binary then runs
   `s2-flares detect --source cdse …` with live progress) → `archive` (grow the
   per-tile parquet collection) → `pull` (rsync CSVs local) → `down` (scale to zero);
   `all` chains them, `ssh`/`ip`/`watch` re-attach.
+- **`image`** bakes a golden snapshot to skip the ~5-8min cold install+build on every
+  boot. It boots one stock box, lets cloud-init do the full install+build, strips the
+  per-VM creds + cloud-init state, snapshots the disk to `$BASEIMG` (`s2-flares-base`),
+  and tears the box down. Thereafter `up` auto-boots from that snapshot (`resolve_image`):
+  the SAME `cloud-init.yaml`'s guards no-op against the on-disk toolchain/tree, so a
+  member is ready in <1min — only the per-VM eodata creds and `start_member`'s incremental
+  `git pull && cargo build` run live. Re-run `image` to refresh the snapshot (e.g. after a
+  `Cargo.lock`/system-lib change); the deps, not the source binary, are what's worth baking.
 - **`cloud-init.yaml`** installs rust + gdal + clang (gdal-sys bindgen) + duckdb,
-  clones, and `cargo build --release -p s2-flares-cli` at boot (no node).
+  clones, and `cargo build --release -p s2-flares-cli` at boot (no node). EVERY heavy
+  step is GUARDED by a presence check, so one file serves both boots: a full cold build
+  on the stock distro, and a near-instant no-op when booted from the golden `$BASEIMG`
+  (toolchain + tree already on disk). The per-VM eodata creds step is the only ungated
+  one — it must rewrite for each box; `image` strips it before snapshotting.
 - **eodata access is per-VM, not anonymous.** The box pulls its own S3 key/secret +
   endpoint from the metadata service at boot into `/etc/profile.d/eodata.sh`; the
   detect binary reads `/vsis3/eodata` via gdal with those env creds.

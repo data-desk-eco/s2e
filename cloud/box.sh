@@ -28,6 +28,7 @@
 # verbatim. the box reads eodata with per-VM creds it pulls from the metadata
 # service at boot (cloud-init), so detection itself needs no secrets.
 set -euo pipefail
+SELF_PWD="$PWD"             # caller's cwd — to resolve relative --aoi paths after the cd below
 cd "$(dirname "$0")"
 
 # GPU=1 → the full-tile nvJPEG2000 path: gpu cloud-init + an L40S vGPU flavor + the
@@ -145,10 +146,13 @@ go_ssh(){ exec ssh $SSHOPTS -i "$KEYFILE" "eouser@$(mip "${1:-0}")"; }
 # detached resumable detect on every member IN PARALLEL. a bbox/no-aoi run can't be
 # split → one member. .fleet pins how many ran so later ops fan out to match.
 run(){
-  local a=("$@") aoi="" rest=() i
+  local a=("$@") aoi="" rest=() i f
   for ((i=0; i<${#a[@]}; i++)); do
-    if [ "${a[i]}" = "--aoi" ] && [ -f "${a[i+1]:-}" ]; then aoi="${a[i+1]}"; ((i++))
-    else rest+=("${a[i]}"); fi
+    if [ "${a[i]}" = "--aoi" ]; then
+      f="${a[i+1]:-}"; [ -f "$f" ] || f="$SELF_PWD/$f"   # box.sh cd'd to its own dir; resolve against the caller's
+      if [ -f "$f" ]; then aoi="$f"; i=$((i+1)); continue; fi   # i++ returns 0 at i=0 → set -e abort on old bash
+    fi
+    rest+=("${a[i]}")
   done
   local n=$FLEET; [ -n "$aoi" ] || n=1
   echo "$n" > .fleet

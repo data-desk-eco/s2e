@@ -197,24 +197,45 @@ pub(crate) fn aux_open(b: &crate::stac::Bands, b11_url: &str) -> Result<Aux, Str
     Ok((open(b11_url)?, b.b8a.as_ref().and_then(|u| open(u).ok()), b.scl.as_ref().and_then(|u| open(u).ok())))
 }
 
+/// the per-block detect.js metadata (geo-anchor + sun geometry). `geom` = (img_min_x,
+/// img_max_y, res_x, res_y). shared by both readers — the candidate's pixel *source*
+/// differs (windowed gdal vs sliced-from-resident), this stays identical.
+pub(crate) fn block_meta(blk: &Block, item: &Item, geom: (f64, f64, f64, f64)) -> BlockMeta {
+    let [x0, y0, x1, y1] = blk.window;
+    let (img_min_x, img_max_y, res_x, res_y) = geom;
+    BlockMeta {
+        date: item.date.clone(), epsg: item.epsg, img_min_x, img_max_y, res_x, res_y,
+        block_offset_x: x0, block_offset_y: y0, width: x1 - x0, height: y1 - y0,
+        mgrs: item.mgrs.clone(), scene: item.id.clone(),
+        sun_elevation: item.sun_elevation, sun_azimuth: item.sun_azimuth,
+    }
+}
+
 /// assemble one candidate from an already-decoded+harmonised b12 block and the aux
-/// rasters (aux windows read + harmonised here). `geom` = (img_min_x, img_max_y,
-/// res_x, res_y). identical for both readers — only b12's *source* differs.
+/// rasters (aux windows read + harmonised here). identical for both readers — only
+/// b12's *source* differs. the windowed `GdalReader`'s lazy-aux assembler.
 pub(crate) fn make_candidate(blk: &Block, b12: Vec<u16>, aux: &Aux, item: &Item, geom: (f64, f64, f64, f64), off: u16) -> Option<Candidate> {
     let (b11_r, b8a_r, scl_r) = aux;
     let mut b11 = read_window::<u16>(b11_r, blk.window)?;
     harmonize(&mut b11, off);
     let b8a = b8a_r.as_ref().and_then(|r| read_window::<u16>(r, blk.window)).map(|mut v| { harmonize(&mut v, off); v });
     let scl = scl_r.as_ref().and_then(|r| read_window::<u8>(r, blk.window));
-    let [x0, y0, x1, y1] = blk.window;
-    let (img_min_x, img_max_y, res_x, res_y) = geom;
-    let meta = BlockMeta {
-        date: item.date.clone(), epsg: item.epsg, img_min_x, img_max_y, res_x, res_y,
-        block_offset_x: x0, block_offset_y: y0, width: x1 - x0, height: y1 - y0,
-        mgrs: item.mgrs.clone(), scene: item.id.clone(),
-        sun_elevation: item.sun_elevation, sun_azimuth: item.sun_azimuth,
-    };
-    Some(Candidate { meta, br: blk.br, bc: blk.bc, b12, b11, b8a, scl })
+    Some(Candidate { meta: block_meta(blk, item, geom), br: blk.br, bc: blk.bc, b12, b11, b8a, scl })
+}
+
+/// row-major slice of a resident full tile into a block window [x0,y0,x1,y1] — the
+/// exact pixels a windowed gdal `read_window` returns, so candidates are byte-identical.
+fn slice<T: Copy>(full: &[T], tile_w: usize, win: [usize; 4]) -> Vec<T> {
+    let [x0, y0, x1, y1] = win;
+    let mut out = Vec::with_capacity((x1 - x0) * (y1 - y0));
+    for row in y0..y1 { let base = row * tile_w; out.extend_from_slice(&full[base + x0..base + x1]); }
+    out
+}
+
+/// one gdal whole-band RasterIO (the bulk reader's cpu decode: replaces hundreds of
+/// windowed decodes with a single full-tile read).
+fn whole<T: Copy + gdal::raster::GdalType>(r: &Raster) -> Option<Vec<T>> {
+    read_window::<T>(r, [0, 0, r.width, r.height])
 }
 
 /// the gdal windowed reader — today's logic, now a `SceneReader` over the shared
@@ -265,20 +286,124 @@ impl SceneReader for GdalReader {
     }
 }
 
-/// pick the reader: `--gpu` → nvJPEG2000 full-tile (only in a `--features gpu` build),
-/// else the gdal windowed reader. boxed behind the trait so the driver is reader-agnostic.
-pub fn make_reader(gpu: bool, harmonize: bool) -> Result<Box<dyn SceneReader>, String> {
-    if gpu {
-        #[cfg(feature = "gpu")]
-        { return Ok(Box::new(crate::gpu::GpuReader::new(harmonize))); }
-        #[cfg(not(feature = "gpu"))]
-        { return Err("--gpu needs a build with --features gpu (CUDA box)".into()); }
+/// the bulk full-tile reader (PLAN.md): for the `--region` wide-area path, fetch +
+/// decode each band WHOLE once, hold all bands resident, then iterate `all_blocks`
+/// slicing from RAM — **zero per-block I/O**. windowed range-reads re-do codestream
+/// decode per block (the ~12s/tile that left the GPU idle); one whole-tile decode
+/// replaces them. cpu: one gdal whole-band RasterIO per band. gpu: nvjpeg2000 batched
+/// over the spectral bands (decode becomes the dominant step — the step the GPU wins).
+/// the sparse point-AOI default stays the windowed `GdalReader`.
+pub struct BulkReader { pub gpu: bool, pub harmonize: bool }
+
+impl SceneReader for BulkReader {
+    fn candidates(&self, item: &Item, bbox: [f64; 4], full_tile: bool, t: &Thresholds, screen_overview: bool)
+        -> Result<(Vec<Candidate>, bool), String> {
+        let off = if self.harmonize { harmonize_offset(&item.date) } else { 0 };
+        let b = &item.bands;
+        let (b12_url, b11_url) = match (&b.b12, &b.b11) {
+            (Some(a), Some(c)) => (a, c),
+            _ => return Ok((Vec::new(), true)),
+        };
+
+        let b12 = open(b12_url)?;
+        let (w, h) = (b12.width, b12.height);
+        let geom = (b12.bbox[0], b12.bbox[3], b12.res_x, b12.res_y);
+        let utm_bbox = if full_tile { b12.bbox } else { region_utm_bbox(&b12, bbox, item.epsg) };
+
+        let ocf = match if screen_overview {
+            overview_screen(&b12, b.scl.as_deref(), utm_bbox, t, off)
+        } else { Screen::Go(true) } {
+            Screen::Skip => return Ok((Vec::new(), false)),
+            Screen::Cold(cf) => return Ok((Vec::new(), cf)),
+            Screen::Go(cf) => cf,
+        };
+
+        // decode every band WHOLE — the bulk move. b12/b11 required; b8a/scl best-effort.
+        let (mut full_b12, mut full_b11, full_b8a, full_scl);
+        if self.gpu {
+            #[cfg(feature = "gpu")] {
+                let (f12, f11, f8a) = crate::gpu::decode_bands(b12_url, b11_url, b.b8a.as_deref())?;
+                if f12.len() != w * h || f11.len() != w * h { return Err("gpu/gdal dim mismatch".into()); }
+                full_b12 = f12; full_b11 = f11; full_b8a = f8a;
+                full_scl = b.scl.as_deref().and_then(|u| open(u).ok()).and_then(|r| whole::<u8>(&r));
+            }
+            #[cfg(not(feature = "gpu"))]
+            { return Err("--gpu needs a --features gpu build (CUDA box)".into()); }
+        } else {
+            full_b12 = whole::<u16>(&b12).ok_or("b12 whole-band read")?;
+            full_b11 = whole::<u16>(&open(b11_url)?).ok_or("b11 whole-band read")?;
+            full_b8a = b.b8a.as_deref().and_then(|u| open(u).ok()).and_then(|r| whole::<u16>(&r));
+            full_scl = b.scl.as_deref().and_then(|u| open(u).ok()).and_then(|r| whole::<u8>(&r));
+        }
+        harmonize(&mut full_b12, off);
+        harmonize(&mut full_b11, off);
+        let full_b8a = full_b8a.map(|mut v| { harmonize(&mut v, off); v });
+
+        // iterate blocks, slice each band from the resident tiles, prescreen, assemble.
+        let blocks = if full_tile { all_blocks(w, h) }
+            else { enumerate_blocks(w, h, b12.bbox, b12.res_x, b12.res_y, bbox, item.epsg) };
+        let floor = b12_dn_min(t);
+        let mut cands = Vec::new();
+        for blk in &blocks {
+            let b12s = slice(&full_b12, w, blk.window);
+            if !any_hot(&b12s, floor) { continue; }
+            cands.push(Candidate {
+                meta: block_meta(blk, item, geom), br: blk.br, bc: blk.bc,
+                b12: b12s, b11: slice(&full_b11, w, blk.window),
+                b8a: full_b8a.as_ref().map(|f| slice(f, w, blk.window)),
+                scl: full_scl.as_ref().map(|f| slice(f, w, blk.window)),
+            });
+        }
+        Ok((cands, ocf))
     }
-    Ok(Box::new(GdalReader { harmonize }))
+}
+
+/// pick the reader: `--region` → the bulk full-tile reader (whole-band decode, in-RAM
+/// detect), `--gpu` adding nvJPEG2000 batched decode (only in a `--features gpu` build);
+/// else the gdal windowed reader (sparse point AOIs). boxed behind the trait so the
+/// driver is reader-agnostic.
+pub fn make_reader(gpu: bool, bulk: bool, harmonize: bool) -> Result<Box<dyn SceneReader>, String> {
+    if gpu && !cfg!(feature = "gpu") { return Err("--gpu needs a --features gpu build (CUDA box)".into()); }
+    if gpu && !bulk { return Err("--gpu is the bulk full-tile path — use it with --region".into()); }
+    Ok(if bulk { Box::new(BulkReader { gpu, harmonize }) } else { Box::new(GdalReader { harmonize }) })
 }
 
 /// the reader seam composed: decode + prescreen (reader) → `core::detect_block` (driver).
 pub fn detect_scene(r: &dyn SceneReader, item: &Item, bbox: [f64; 4], full_tile: bool, t: &Thresholds, screen_overview: bool) -> Result<(Vec<Detection>, bool), String> {
     let (cands, ocf) = r.candidates(item, bbox, full_tile, t, screen_overview)?;
     Ok(detect_candidates(&cands, ocf, t))
+}
+
+// cpu-only half of the parity gate: bulk whole-band slicing == windowed reads, over
+// real (anonymous AWS COG) scenes — runs anywhere with net, no CUDA/eodata. the gpu
+// half lives in gpu.rs (box-only). #[ignore]'d (network):
+//   S2_PARITY_BBOX=W,S,E,N cargo test -p s2-flares-cli --release parity_cpu -- --ignored --nocapture
+#[cfg(test)]
+mod parity_cpu {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn bulk_matches_windowed() {
+        configure();
+        let s = std::env::var("S2_PARITY_BBOX").expect("set S2_PARITY_BBOX=W,S,E,N");
+        let v: Vec<f64> = s.split(',').map(|x| x.trim().parse().unwrap()).collect();
+        let bbox = [v[0], v[1], v[2], v[3]];
+        let (start, end) = (std::env::var("S2_PARITY_START").unwrap_or_else(|_| "2024-01-01".into()),
+                            std::env::var("S2_PARITY_END").unwrap_or_else(|_| "2024-12-31".into()));
+        let mut items = crate::stac::search(bbox, &start, &end, 100.0, "aws").expect("stac search");
+        items.truncate(3);
+        assert!(!items.is_empty(), "no scenes for the parity bbox/window");
+        let (t, win, bulk) = (Thresholds::default(), GdalReader { harmonize: false }, BulkReader { gpu: false, harmonize: false });
+        for it in &items {
+            let a = detect_scene(&win, it, bbox, false, &t, false).expect("windowed").0;
+            let b = detect_scene(&bulk, it, bbox, false, &t, false).expect("bulk").0;
+            assert_eq!(a.len(), b.len(), "count mismatch {} {}", it.mgrs, it.date);
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert_eq!((x.lon.to_bits(), x.lat.to_bits(), x.max_b12.to_bits(), x.pixels),
+                           (y.lon.to_bits(), y.lat.to_bits(), y.max_b12.to_bits(), y.pixels),
+                           "mismatch {} {}", it.mgrs, it.date);
+            }
+            eprintln!("cpu parity OK {} {} — {} detections", it.mgrs, it.date, a.len());
+        }
+    }
 }

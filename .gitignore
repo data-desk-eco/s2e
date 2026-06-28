@@ -2,3 +2,5 @@
 data/
 .env
 cloud/.box-ip
+out/
+cloud/.box-ip.cpu-backup

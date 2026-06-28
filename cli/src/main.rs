@@ -84,7 +84,7 @@ struct Common {
     /// Restrict --region to these MGRS tiles (comma-separated, e.g. 39RWN,39RXN).
     #[arg(long, value_name = "MGRS,…", value_delimiter = ',')]
     tiles: Vec<String>,
-    /// Use the GPU reader (nvJPEG2000 full-tile decode) — needs a --features gpu build.
+    /// GPU-decode the bulk path (nvJPEG2000 batched full-tile) — use with --region; needs a --features gpu build.
     #[arg(long)]
     gpu: bool,
     /// Halo around each aoi, km.
@@ -242,9 +242,9 @@ fn run_detect(c: &Common, out: &str, pool: &rayon::ThreadPool) {
     let aois = load_aois(c);
     let (start, end) = c.dates();
     let harmonize = c.harmonize();
-    let reader = read::make_reader(c.gpu, harmonize).unwrap_or_else(|e| die(&e));
+    let reader = read::make_reader(c.gpu, c.region.is_some(), harmonize).unwrap_or_else(|e| die(&e));
     eprintln!("detect: {} aoi(s) | {start} → {end} | b12≥{} b11≥{} | source={}{} → {out}/",
-        aois.len(), t.b12_min, t.b11_min, c.source, if c.gpu { " gpu" } else { "" });
+        aois.len(), t.b12_min, t.b11_min, c.source, if c.gpu { " gpu" } else if c.region.is_some() { " bulk" } else { "" });
     let (mut scenes, mut detected) = (0usize, 0usize);
     for aoi in &aois {
         let mut items = match stac::search(aoi.bbox, &start, &end, c.cloud, &c.source) {
@@ -289,7 +289,7 @@ fn run_cluster(c: &Common, archive: &Option<String>, out: &Option<String>,
             let t = c.thresholds();
             let aois = load_aois(c);
             let harmonize = c.harmonize();
-            let reader = read::make_reader(c.gpu, harmonize).unwrap_or_else(|e| die(&e));
+            let reader = read::make_reader(c.gpu, c.region.is_some(), harmonize).unwrap_or_else(|e| die(&e));
             eprintln!("cluster: fresh detect over {} aoi(s) | {start} → {end}", aois.len());
             let mut dets = Vec::new();
             let mut obs: std::collections::HashMap<String, bool> = std::collections::HashMap::new();

@@ -10,12 +10,14 @@ runcmd:
   - su - eouser -c 'curl -fsSL https://install.duckdb.org | bash'
   - ln -sf /home/eouser/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb
   # CUDA toolkit + nvJPEG2000 from the NVIDIA cuda apt repo (driver already in image).
-  # package names vary by toolkit version; the fallback covers the unversioned aliases.
+  # PIN 12.8: the image's vGPU driver (570.x) tops out at CUDA 12.8 — the unversioned
+  # `cuda-toolkit` pulls 13.x, whose cudart the driver rejects ("driver insufficient")
+  # and every CUDA call fails. nvjpeg2k is the cuda-12 build, so the whole stack is 12.x.
   - curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb -o /tmp/cuda-keyring.deb
   - dpkg -i /tmp/cuda-keyring.deb
   - apt-get update
-  - DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-toolkit libnvjpeg2k0-cuda-12 libnvjpeg2k0-dev-cuda-12
-  - printf 'export CUDA_PATH=/usr/local/cuda\nexport PATH=$PATH:/usr/local/cuda/bin\nexport LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu/libnvjpeg2k/12:$LD_LIBRARY_PATH\n' > /etc/profile.d/cuda.sh
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-toolkit-12-8 libnvjpeg2k0-cuda-12 libnvjpeg2k0-dev-cuda-12
+  - printf 'export CUDA_PATH=/usr/local/cuda-12.8\nexport PATH=$PATH:/usr/local/cuda-12.8/bin\nexport LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/usr/lib/x86_64-linux-gnu/libnvjpeg2k/12:$LD_LIBRARY_PATH\n' > /etc/profile.d/cuda.sh
   # rust + clone + build the cli WITH the gpu feature (gdal-sys bindgen needs clang;
   # the gpu crate's build.rs invokes nvcc and links nvjpeg2k + cudart).
   - su - eouser -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'

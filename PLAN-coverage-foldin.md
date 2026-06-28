@@ -156,13 +156,18 @@ cell is read back via spatial join, rather than re-sampled at the anchor in a se
 pass — same location, same window scale. validate (step 5) that this is score-neutral,
 document it, then make it default and delete the second pass.
 
-## bonus (note, don't block on it)
+## where the spatial join runs (NOT the browser)
 
-- a location-keyed cloud mask means the **web map can compute `n_clear_obs` live in
-  wasm** for any viewport/date window (spatial-join detections against the mask in the
-  browser) — today it can only use the stored full-window snapshot. live persistence on
-  the map, for free.
-- it also **fixes a window-matching bug for free**: the separate scan was driven by
+the anchor⋈mask join is a **build-time** step: the cluster step (on the box, in
+`archive`) joins anchors against `clouds/`, bakes `n_clear_obs`/persistence into
+`clusters/`, and **the web map just reads those baked clusters** — it does NOT
+spatial-join at query time (confirmed: the map uses precomputed persistence). so
+`clouds/` is an internal build artifact, not a web-queried one — keep it in S3 for
+**regenerating `clusters/` at a different date window without re-reading SCL** (re-join
+the existing mask), but it needs no public-read/CORS and the browser never touches it.
+
+## bonus (note, don't block on it)
+- it **fixes a window-matching bug for free**: the separate scan was driven by
   `box.sh archive`'s `START/END` (default `2015-01-01 → 2100-01-01`), so persistence
   counted a decade of clear looks against an 18-month detection window — a deflated
   denominator (and a ~7× slower scan). tying observations to the scenes detection

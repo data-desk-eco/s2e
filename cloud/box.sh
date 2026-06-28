@@ -223,7 +223,7 @@ SET s3_endpoint='s3.$REGION.cloudferro.com'; SET s3_region='$REGION';
 SET s3_url_style='path'; SET s3_use_ssl=true;
 SET s3_access_key_id='$AK'; SET s3_secret_access_key='$SK';"
 # tiles with ≥1 detection (skip header-only scenes); <mgrs>_<date>.csv → mgrs.
-tiles=$(for f in "$OUT"/*/*.csv; do [ "$(wc -l <"$f")" -gt 1 ] && b=$(basename "$f" .csv) && echo "${b%_*}"; done | sort -u)
+tiles=$(for f in "$OUT"/*/*.csv; do [ "$(wc -l <"$f")" -gt 1 ] && b=$(basename "$f" .csv) && echo "${b%_*}" || :; done | sort -u)
 { echo "$S3"
   for m in $tiles; do
     echo "COPY (SELECT DISTINCT * EXCLUDE(mgrs) FROM read_csv('$OUT/*/${m}_*.csv', union_by_name=true) ORDER BY date) TO 's3://$BUCKET/detections/mgrs=$m/data.parquet' (FORMAT parquet);"

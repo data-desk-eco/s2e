@@ -69,14 +69,29 @@ pub fn configure() {
         ("AWS_VIRTUAL_HOSTING", "FALSE"), ("AWS_HTTPS", "YES"),
         ("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR"),
         ("GDAL_HTTP_MULTIPLEX", "YES"), ("VSI_CACHE", "TRUE"),
+        // retry transient s3 errors instead of returning a NULL dataset on the first
+        // hiccup — fleet-wide concurrency on /vsis3 eodata throttles, and an un-retried
+        // GDALOpenEx NULL was failing whole scenes. (also covers the aws /vsicurl path.)
+        ("GDAL_HTTP_MAX_RETRY", "5"), ("GDAL_HTTP_RETRY_DELAY", "1"),
     ] {
         let _ = gdal::config::set_config_option(k, v);
     }
 }
 
-// s3://… → /vsis3/… ; http(s):// → /vsicurl/… ; /vsi* and local paths pass through.
+// CloudFerro mounts the eodata archive as a POSIX fs at /eodata (s3fs); the mount root
+// existing is our signal it's an in-region box. checked once — a stat per band open is
+// wasteful and the mount doesn't appear mid-run.
+static EODATA_MOUNT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+fn eodata_mounted() -> bool { *EODATA_MOUNT.get_or_init(|| std::path::Path::new("/eodata/Sentinel-2").is_dir()) }
+
+// s3://eodata/… → /eodata/… when the in-region s3fs mount is present (a local file open
+// sidesteps the /vsis3 curl path and its transient throttling NULLs); otherwise
+// s3://… → /vsis3/… . http(s):// → /vsicurl/… ; /vsi* and local paths pass through.
 pub(crate) fn to_vsi(href: &str) -> String {
-    if let Some(r) = href.strip_prefix("s3://") { format!("/vsis3/{r}") }
+    if let Some(r) = href.strip_prefix("s3://") {
+        if let Some(p) = r.strip_prefix("eodata/") { if eodata_mounted() { return format!("/eodata/{p}"); } }
+        format!("/vsis3/{r}")
+    }
     else if href.starts_with("http://") || href.starts_with("https://") { format!("/vsicurl/{href}") }
     else { href.to_string() }
 }

@@ -1,7 +1,8 @@
 # SLSTR flare detection (experimental)
 
-Night-time flaring detection from Sentinel-3 SLSTR L1B, sibling to the parent s2-flares JS library.
-Subdir-only while the methodology is being validated; will fold into the unified `s2-flares` CLI once reliable.
+Night-time flaring detection from Sentinel-3 SLSTR L1B, a night-time complement to
+the day-time Sentinel-2 SWIR detection in this workspace. Kept in this subdir while
+the methodology is being validated; will fold into the `s2-flares` CLI once reliable.
 
 ## Status
 

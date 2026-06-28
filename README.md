@@ -1,13 +1,14 @@
 # s2-flares
 
-The canonical **Sentinel-2 SWIR gas-flare detection** methodology core. It detects
+A **Sentinel-2 SWIR gas-flare detection** methodology core. It detects
 flares at 20 m from Sentinel-2 L2A Band 12/11/8A imagery, clusters detections
 across dates into persistent sites, and attaches a vision-validated quality score.
 
 It is a small **Rust workspace**: one pure methodology core (`core/`) that compiles
 both to a fast native CLI (`cli/`, GDAL-backed) and to WebAssembly (`wasm/`) for the
-browser. The same frozen methodology drives every consumer — there is no
-JS/native split to drift.
+browser. The same frozen methodology drives every consumer — native and browser
+detect and cluster through one shared core, so there is no second implementation
+to drift.
 
 ```
 core/   pure compute — detect, cluster, score, coverage, geo. no I/O. → wasm + cli.
@@ -101,5 +102,6 @@ it stays disposable, the S3 archive persists.
 cargo test -p s2-flares-core    # the methodology unit suite (score, glint, cluster, geo)
 ```
 
-The pure-compute tests are ported 1:1 from the JS lineage this core supersedes, and
-are the parity gate the methodology must not drift from.
+The pure-compute tests are the parity gate the methodology must not drift from —
+each gate of the spectral mask, the score formula, the cluster id hash, and the
+glint discriminator is pinned by a unit test.

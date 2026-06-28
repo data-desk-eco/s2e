@@ -1,0 +1,424 @@
+{
+ "type": "FeatureCollection",
+ "name": "netia-mind-candidate-footprints",
+ "properties": {
+  "note": "OSM non-residential footprints within 300-400m of the datacentermap pin (52.210771,20.848805) for Netia DC MIND, Jawczyce. CANDIDATES ONLY \u2014 OSM does not tag the DC by name; coordinate from a directory site, treat as approximate. Largest: 8844 m2 industrial polygon.",
+  "source": "OpenStreetMap via Overpass",
+  "retrieved": "2026-06-28"
+ },
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "osm_id": 411615641,
+    "addr:city": "Jawczyce",
+    "addr:city:simc": "0005813",
+    "addr:housenumber": "16",
+    "addr:postcode": "05-850",
+    "addr:street": "Sadowa",
+    "building": "warehouse",
+    "building:levels": "1",
+    "source": "www.geoportal.gov.pl",
+    "source:addr": "ozarowmazowiecki.e-mapa.net"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       20.8472895,
+       52.2110564
+      ],
+      [
+       20.8466747,
+       52.2111391
+      ],
+      [
+       20.8467158,
+       52.2112538
+      ],
+      [
+       20.8473307,
+       52.2111712
+      ],
+      [
+       20.8472895,
+       52.2110564
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "osm_id": 863765042,
+    "landuse": "industrial"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       20.846686,
+       52.2115062
+      ],
+      [
+       20.8482603,
+       52.2112887
+      ],
+      [
+       20.8479965,
+       52.2106391
+      ],
+      [
+       20.8478539,
+       52.210629
+      ],
+      [
+       20.8463841,
+       52.2107803
+      ],
+      [
+       20.846686,
+       52.2115062
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "osm_id": 1131927127,
+    "building": "commercial"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       20.8503263,
+       52.2107628
+      ],
+      [
+       20.8504453,
+       52.2110413
+      ],
+      [
+       20.8503743,
+       52.2110645
+      ],
+      [
+       20.8504895,
+       52.211218
+      ],
+      [
+       20.8505195,
+       52.2112149
+      ],
+      [
+       20.8505822,
+       52.21138
+      ],
+      [
+       20.8505222,
+       52.2114011
+      ],
+      [
+       20.8506208,
+       52.2115261
+      ],
+      [
+       20.8506415,
+       52.2115243
+      ],
+      [
+       20.8506627,
+       52.2115738
+      ],
+      [
+       20.8506689,
+       52.2115915
+      ],
+      [
+       20.8512396,
+       52.2115046
+      ],
+      [
+       20.8510549,
+       52.2110758
+      ],
+      [
+       20.8508854,
+       52.2106744
+      ],
+      [
+       20.850356,
+       52.2107582
+      ],
+      [
+       20.8503263,
+       52.2107628
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "osm_id": 1132968104,
+    "building": "commercial"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       20.8518316,
+       52.2111291
+      ],
+      [
+       20.8521388,
+       52.2110863
+      ],
+      [
+       20.8521549,
+       52.2111291
+      ],
+      [
+       20.8518491,
+       52.2111734
+      ],
+      [
+       20.8518316,
+       52.2111291
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "osm_id": 1132971067,
+    "building": "commercial"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       20.8511038,
+       52.2105179
+      ],
+      [
+       20.8510917,
+       52.2104863
+      ],
+      [
+       20.8511172,
+       52.2104826
+      ],
+      [
+       20.8511293,
+       52.2105142
+      ],
+      [
+       20.8511038,
+       52.2105179
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "osm_id": 1133277508,
+    "building": "commercial"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       20.8503142,
+       52.2106344
+      ],
+      [
+       20.8504363,
+       52.2106139
+      ],
+      [
+       20.8504176,
+       52.210572
+      ],
+      [
+       20.8502954,
+       52.2105926
+      ],
+      [
+       20.8503142,
+       52.2106344
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "osm_id": 1133277529,
+    "building": "commercial"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       20.8504796,
+       52.2106076
+      ],
+      [
+       20.8504609,
+       52.2105643
+      ],
+      [
+       20.8506022,
+       52.2105413
+      ],
+      [
+       20.850621,
+       52.2105846
+      ],
+      [
+       20.8504796,
+       52.2106076
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "osm_id": 1133536644,
+    "building": "commercial"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       20.8508941,
+       52.210503
+      ],
+      [
+       20.85091,
+       52.2105375
+      ],
+      [
+       20.8508757,
+       52.210543
+      ],
+      [
+       20.8508593,
+       52.2105079
+      ],
+      [
+       20.8508941,
+       52.210503
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "osm_id": 1137367959,
+    "barrier": "fence",
+    "landuse": "industrial"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       20.8497916,
+       52.2105861
+      ],
+      [
+       20.8500269,
+       52.2105549
+      ],
+      [
+       20.850003,
+       52.2104959
+      ],
+      [
+       20.8497625,
+       52.2105112
+      ],
+      [
+       20.8497916,
+       52.2105861
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "osm_id": 1416156420,
+    "building": "commercial"
+   },
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       20.8486727,
+       52.2115015
+      ],
+      [
+       20.8488788,
+       52.212035
+      ],
+      [
+       20.8496268,
+       52.2119265
+      ],
+      [
+       20.8496065,
+       52.211874
+      ],
+      [
+       20.8499166,
+       52.2118291
+      ],
+      [
+       20.8497364,
+       52.2113622
+      ],
+      [
+       20.8494453,
+       52.2114044
+      ],
+      [
+       20.8494398,
+       52.2113902
+      ],
+      [
+       20.8486727,
+       52.2115015
+      ]
+     ]
+    ]
+   }
+  }
+ ]
+}

@@ -245,34 +245,46 @@ fn run_detect(c: &Common, out: &str, pool: &rayon::ThreadPool) {
     let reader = read::make_reader(c.gpu, c.region.is_some(), harmonize).unwrap_or_else(|e| die(&e));
     eprintln!("detect: {} aoi(s) | {start} → {end} | b12≥{} b11≥{} | source={}{} → {out}/",
         aois.len(), t.b12_min, t.b11_min, c.source, if c.gpu { " gpu" } else if c.region.is_some() { " bulk" } else { "" });
-    let (mut scenes, mut detected) = (0usize, 0usize);
+    let (mut scenes, mut detected, mut errored) = (0usize, 0usize, 0usize);
     for aoi in &aois {
         let mut items = match stac::search(aoi.bbox, &start, &end, c.cloud, &c.source) {
             Ok(v) => v, Err(e) => { eprintln!("  {} search FAIL: {e}", aoi.id); continue; }
         };
         filter_tiles(c, &mut items);
         scenes += items.len();
-        let (done, skipped, det) = pool.install(|| {
+        // each scene reaches exactly one durable terminal state: a <mgrs>_<date>.csv
+        // (success, header-only when flareless) or a sibling .err (a read/detect FAIL,
+        // holding the message). a lone .err is NOT done → retried on the next resume,
+        // and cleared the moment that scene succeeds. so a clean run leaves zero .err
+        // and `verify` can PROVE no scene errored — see cloud/box.sh verify().
+        let (done, skipped, errs, det) = pool.install(|| {
             items.par_iter().map(|item| {
                 let path = format!("{out}/{}/{}_{}.csv", aoi.id, item.mgrs, item.date);
-                if Path::new(&path).exists() { return (0usize, 1usize, 0usize); }
+                let errp = format!("{out}/{}/{}_{}.err", aoi.id, item.mgrs, item.date);
+                if Path::new(&path).exists() { return (0usize, 1usize, 0usize, 0usize); }
                 match read::detect_scene(&*reader, item, det_bbox(aoi, item), aoi.full_tile, &t, false) {
                     Ok((dets, _)) => {
                         let _ = fs::create_dir_all(Path::new(&path).parent().unwrap());
                         let body: String = std::iter::once(SCENE_HEADER.to_string())
                             .chain(dets.iter().map(scene_row)).collect::<Vec<_>>().join("\n") + "\n";
                         let _ = fs::write(&path, body);
+                        let _ = fs::remove_file(&errp);
                         eprintln!("  {} {}_{}: {} det", aoi.id, item.mgrs, item.date, dets.len());
-                        (1, 0, dets.len())
+                        (1, 0, 0, dets.len())
                     }
-                    Err(e) => { eprintln!("  {} {}_{} FAIL: {e}", aoi.id, item.mgrs, item.date); (0, 0, 0) }
+                    Err(e) => {
+                        let _ = fs::create_dir_all(Path::new(&errp).parent().unwrap());
+                        let _ = fs::write(&errp, format!("{e}\n"));
+                        eprintln!("  {} {}_{} FAIL: {e}", aoi.id, item.mgrs, item.date);
+                        (0, 0, 1, 0)
+                    }
                 }
-            }).reduce(|| (0, 0, 0), |x, y| (x.0 + y.0, x.1 + y.1, x.2 + y.2))
+            }).reduce(|| (0, 0, 0, 0), |x, y| (x.0 + y.0, x.1 + y.1, x.2 + y.2, x.3 + y.3))
         });
-        detected += det;
-        eprintln!("  {} {}: {} scenes ({} new, {} cached), {} detections", aoi.id, aoi.name, items.len(), done, skipped, det);
+        detected += det; errored += errs;
+        eprintln!("  {} {}: {} scenes ({} new, {} cached, {} errored), {} detections", aoi.id, aoi.name, items.len(), done, skipped, errs, det);
     }
-    eprintln!("\ndone: {scenes} scenes, {detected} detections → {out}/");
+    eprintln!("\ndone: {scenes} scenes, {errored} errored, {detected} detections → {out}/");
     eprintln!("archive to parquet, then: s2-flares cluster --archive '{out}/**/*.parquet' --out clusters.parquet");
 }
 

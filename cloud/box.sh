@@ -7,7 +7,7 @@
 #   ./box.sh pull                     rsync the per-scene CSVs down to $LOCAL_DATA
 #   ./box.sh archive                  roll the CSVs up to s3://$BUCKET/{detections,
 #                                     clusters} (per-tile raw parquet + the view)
-#   ./box.sh verify                   assert every AOI feature was scanned (gaps→exit 1)
+#   ./box.sh verify                   prove every AOI feature scanned + 0 errored scenes
 #   ./box.sh publish                  make that archive a web-map backend: anonymous
 #                                     public-read + CORS, so DuckDB-wasm can read it
 #   ./box.sh wipe                     empty the archive bucket (confirms; FORCE=1 skips)
@@ -300,20 +300,28 @@ down(){
   printf '\n\033[1;32m✓ scaled to zero\033[0m\n'
 }
 
-# reconcile the AOI against what actually got scanned, BEFORE scaling to zero — the
-# failure that silently hid 25 of 81 LNG terminals (das island among them) from the
-# published archive. detect writes OUT/<feature-id>/<mgrs>_<date>.csv, header-only
-# even for a flareless scene, so a feature with NO subdir == never scanned (STAC empty,
-# a lost batch, the box downed pre-archive) — which was otherwise indistinguishable
-# from "scanned, no flares". lists every such gap and exits nonzero; `all` gates `down`
-# on it so a partial run keeps the box (and its CSVs) alive for a resumable re-run
-# rather than dropping terminals. id precedence mirrors load_aois() in main.rs.
+# PROVE a run is complete and clean, BEFORE scaling to zero — two assertions over the
+# box's OUT, both born of the run that silently hid 25 of 81 LNG terminals (das island
+# among them) from the published archive:
+#   1. coverage — every AOI feature was reached. detect writes OUT/<id>/<mgrs>_<date>
+#      .csv (header-only even when flareless), so a feature with NO subdir == never
+#      scanned (STAC empty, a lost batch, the box downed pre-archive). id precedence
+#      mirrors load_aois() in main.rs.
+#   2. no errors — every attempted scene succeeded. a read/detect FAIL leaves a sibling
+#      <mgrs>_<date>.err (cleared on a later successful retry), so ANY remaining .err
+#      means a scene is unproven. a lone .err retries on the next resume, so the path to
+#      green is just: re-run (resumable) until verify is clean.
+# lists every gap/error and exits nonzero; `all` gates `down` on it so a partial-or-
+# errored run keeps the box (and its CSVs) alive for a resumable re-run, never lost.
 verify(){
   sshx "cd $REPO_DIR && OUT='$OUT' python3 - <<'PY'
 import json,os,glob,sys
 out=os.environ['OUT']
+errs=sorted(glob.glob(os.path.join(out,'*','*.err'))) if os.path.isdir(out) else []
 if not os.path.exists('_aoi.geojson'):
-    print('verify: no _aoi.geojson (bbox/region run) — nothing to reconcile'); sys.exit(0)
+    print(f'verify: no _aoi.geojson (bbox/region run) — {len(errs)} errored scenes')
+    for e in errs: print('  errored:',e)
+    sys.exit(1 if errs else 0)
 def fid(i,f):
     p=f.get('properties',{}) or {}
     for k in ('id','ProjectID'):
@@ -322,9 +330,10 @@ def fid(i,f):
 ids=[fid(i,f) for i,f in enumerate(json.load(open('_aoi.geojson')).get('features',[]))]
 scanned={d for d in (os.listdir(out) if os.path.isdir(out) else []) if glob.glob(os.path.join(out,d,'*.csv'))}
 gaps=[i for i in ids if i not in scanned]
-print(f'verify: {len(ids)-len(gaps)}/{len(ids)} AOI features scanned, {len(gaps)} unscanned')
+print(f'verify: {len(ids)-len(gaps)}/{len(ids)} AOI features scanned, {len(gaps)} unscanned, {len(errs)} errored scenes')
 for g in gaps: print('  unscanned:',g)
-sys.exit(1 if gaps else 0)
+for e in errs: print('  errored:',e)
+sys.exit(1 if (gaps or errs) else 0)
 PY"
 }
 

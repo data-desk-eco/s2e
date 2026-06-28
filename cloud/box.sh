@@ -7,12 +7,13 @@
 #   ./box.sh pull                     rsync the per-scene CSVs down to $LOCAL_DATA
 #   ./box.sh archive                  roll the CSVs up to s3://$BUCKET/{detections,
 #                                     clusters} (per-tile raw parquet + the view)
+#   ./box.sh verify                   assert every AOI feature was scanned (gaps→exit 1)
 #   ./box.sh publish                  make that archive a web-map backend: anonymous
 #                                     public-read + CORS, so DuckDB-wasm can read it
 #   ./box.sh wipe                     empty the archive bucket (confirms; FORCE=1 skips)
 #   ./box.sh cost                     estimate run cost so far (uptime × flavor €/h)
 #   ./box.sh down                     scale to zero (delete VM + floating IP)
-#   ./box.sh all <detect args>        up → run → archive → pull → down, hands-off
+#   ./box.sh all <detect args>        up → run → archive → pull → verify → down, hands-off
 #   ./box.sh ssh | ip | watch         interactive login / floating IP / re-attach
 #
 # `run`/`pull`/`watch` are ssh-only; `up`/`down`/`archive`/`ip` use the openstack
@@ -299,14 +300,45 @@ down(){
   printf '\n\033[1;32m✓ scaled to zero\033[0m\n'
 }
 
+# reconcile the AOI against what actually got scanned, BEFORE scaling to zero — the
+# failure that silently hid 25 of 81 LNG terminals (das island among them) from the
+# published archive. detect writes OUT/<feature-id>/<mgrs>_<date>.csv, header-only
+# even for a flareless scene, so a feature with NO subdir == never scanned (STAC empty,
+# a lost batch, the box downed pre-archive) — which was otherwise indistinguishable
+# from "scanned, no flares". lists every such gap and exits nonzero; `all` gates `down`
+# on it so a partial run keeps the box (and its CSVs) alive for a resumable re-run
+# rather than dropping terminals. id precedence mirrors load_aois() in main.rs.
+verify(){
+  sshx "cd $REPO_DIR && OUT='$OUT' python3 - <<'PY'
+import json,os,glob,sys
+out=os.environ['OUT']
+if not os.path.exists('_aoi.geojson'):
+    print('verify: no _aoi.geojson (bbox/region run) — nothing to reconcile'); sys.exit(0)
+def fid(i,f):
+    p=f.get('properties',{}) or {}
+    for k in ('id','ProjectID'):
+        if isinstance(p.get(k),str): return p[k]
+    return str(i)
+ids=[fid(i,f) for i,f in enumerate(json.load(open('_aoi.geojson')).get('features',[]))]
+scanned={d for d in (os.listdir(out) if os.path.isdir(out) else []) if glob.glob(os.path.join(out,d,'*.csv'))}
+gaps=[i for i in ids if i not in scanned]
+print(f'verify: {len(ids)-len(gaps)}/{len(ids)} AOI features scanned, {len(gaps)} unscanned')
+for g in gaps: print('  unscanned:',g)
+sys.exit(1 if gaps else 0)
+PY"
+}
+
 # hands-off pipeline: provision, detect, archive to object storage, pull locally,
-# scale to zero. the archive (S3) and the local CSVs persist; only the box is
-# ephemeral. compose the steps by hand to keep the box warm between runs.
-all(){ up; run "$@"; archive; pull; down; }
+# reconcile, scale to zero. the archive (S3) and the local CSVs persist; only the box
+# is ephemeral. `down` fires only when `verify` proves every AOI feature was scanned —
+# a gap keeps the box up so the run can be resumed and re-archived, never lost.
+all(){ up; run "$@"; archive; pull
+  if verify; then down
+  else say "verify found unscanned AOI features — box kept up. re-run (resumable), re-archive, then ./box.sh down"; fi; }
 
 case "${1:-}" in
   up) up;; ip) ip;; ssh) go_ssh;; cost) cost;; down) down;;
-  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; publish) publish;; wipe) wipe;; parity) parity;;
+  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; wipe) wipe;; parity) parity;;
   all) shift; all "$@";;
-  *) echo "usage: $0 {up | run <detect args> | watch | pull | archive | publish | wipe | parity | cost | down | all <detect args> | ssh | ip}  (GPU=1 → gpu box)" >&2; exit 1;;
+  *) echo "usage: $0 {up | run <detect args> | watch | pull | archive | verify | publish | wipe | parity | cost | down | all <detect args> | ssh | ip}  (GPU=1 → gpu box)" >&2; exit 1;;
 esac

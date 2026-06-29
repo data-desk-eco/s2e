@@ -434,7 +434,14 @@ pub fn cloud_scene(item: &Item, bbox: [f64; 4], full_tile: bool) -> Vec<(String,
 /// the reader seam composed: decode + prescreen (reader) → `core::detect_block` (driver).
 pub fn detect_scene(r: &dyn SceneReader, item: &Item, bbox: [f64; 4], full_tile: bool, t: &Thresholds, screen_overview: bool) -> Result<(Vec<Detection>, bool), String> {
     let (cands, ocf) = r.candidates(item, bbox, full_tile, t, screen_overview)?;
-    Ok(detect_candidates(&cands, ocf, t))
+    let (mut dets, cf) = detect_candidates(&cands, ocf, t);
+    // blocks snap OUT to the 256 px grid, so detections can land up to ~one block beyond
+    // the requested AOI. clip to the AOI bbox so nothing outside it is ever emitted —
+    // keeps the published footprint == the AOI boxes. (full_tile/region wants the whole tile.)
+    if !full_tile {
+        dets.retain(|d| d.lon >= bbox[0] && d.lon <= bbox[2] && d.lat >= bbox[1] && d.lat <= bbox[3]);
+    }
+    Ok((dets, cf))
 }
 
 // cpu-only half of the parity gate: bulk whole-band slicing == windowed reads, over

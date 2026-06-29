@@ -299,7 +299,7 @@ if not n: sys.exit(1)
 json.dump({'type':'FeatureCollection','features':list(feats.values())}, open(f'{tmp}/new.json','w'))
 print(f'  coverage.geojson: {n} scanned features merged → {len(feats)} total')
 PY
-  "${s3[@]}" cp "$tmp/new.json" "s3://$BUCKET/coverage.geojson"
+  "${s3[@]}" cp --acl public-read "$tmp/new.json" "s3://$BUCKET/coverage.geojson"
 }
 
 # runs on the head: one COPY per tile (union of all that tile's non-empty scene CSVs)

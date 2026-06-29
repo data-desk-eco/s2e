@@ -98,9 +98,11 @@ pub fn read_archive(archive: &str, bbox: Option<[f64; 4]>, start: &str, end: &st
 }
 
 /// read the cloud mask (clouds/ glob/parquet: glon,glat,date,cloud_frac) over a date
-/// window → rows for the cluster spatial join. duckdb owns the parquet/s3 read; the
-/// snap + anchor join is pure rust in main::clouds_rescore.
-pub fn read_clouds(glob: &str, start: &str, end: &str) -> Result<Vec<(f64, f64, String, f64)>, String> {
+/// window, STREAMING each row to `sink` — duckdb owns the parquet/s3 read; the snap +
+/// anchor join is pure rust in main::clouds_rescore. streamed (not returned as a Vec)
+/// because the mask is multi-GB: the caller keeps only the ~anchor cells it queries, so
+/// peak memory is O(anchors), not O(mask) — the whole-mask materialise OOM'd the box.
+pub fn read_clouds(glob: &str, start: &str, end: &str, mut sink: impl FnMut(f64, f64, &str, f64)) -> Result<(), String> {
     let out = tmp("clouds.csv");
     let out_s = out.to_string_lossy();
     let sql = format!(
@@ -108,15 +110,15 @@ pub fn read_clouds(glob: &str, start: &str, end: &str) -> Result<Vec<(f64, f64, 
          WHERE date >= '{start}' AND date <= '{end}') TO '{out_s}' (FORMAT CSV, HEADER)",
         prelude = s3_prelude());
     duckdb(&sql)?;
-    let text = std::fs::read_to_string(&out).map_err(|e| format!("read clouds: {e}"))?;
-    let _ = std::fs::remove_file(&out);
-    let mut v = Vec::new();
-    for line in text.lines().skip(1) {
+    use std::io::BufRead;
+    let file = std::fs::File::open(&out).map_err(|e| format!("read clouds: {e}"))?;
+    for line in std::io::BufReader::new(file).lines().skip(1).map_while(Result::ok) {
         let f: Vec<&str> = line.split(',').collect();
         if f.len() < 4 { continue; }
-        v.push((f[0].parse().unwrap_or(0.0), f[1].parse().unwrap_or(0.0), f[2].to_string(), f[3].parse().unwrap_or(1.0)));
+        sink(f[0].parse().unwrap_or(0.0), f[1].parse().unwrap_or(0.0), f[2], f[3].parse().unwrap_or(1.0));
     }
-    Ok(v)
+    let _ = std::fs::remove_file(&out);
+    Ok(())
 }
 
 /// distinct mgrs tiles in the archive + each tile's detection bounding box — the

@@ -379,13 +379,24 @@ fn run_cluster(c: &Common, archive: &Option<String>, out: &Option<String>,
 // (persistence skipped, as when coverage is absent). no STAC search, no second SCL pass.
 fn clouds_rescore(glob: &str, start: &str, end: &str, clusters: &mut [Cluster]) {
     use std::collections::{HashMap, HashSet};
-    let rows = view::read_clouds(glob, start, end).unwrap_or_else(|e| die(&e));
-    // cell key → the distinct dates that cell was observed CLEAR.
-    let mut clear: HashMap<String, HashSet<String>> = HashMap::new();
-    for (glon, glat, date, cf) in rows {
-        if cf <= s2_flares_core::CLEAR_MAX { clear.entry(s2_flares_core::cell_key(glon, glat)).or_default().insert(date); }
-    }
     let step = s2_flares_core::GRID_STEP;
+    // the join only ever reads each anchor's own cell + its 3×3 fallback, so precompute
+    // that cell-key set (≤ 9·clusters) and keep ONLY those while streaming the mask — peak
+    // memory is O(anchors), not O(mask). materialising the whole multi-GB mask OOM'd the box.
+    let mut needed: HashSet<String> = HashSet::new();
+    for cl in clusters.iter() {
+        for dj in -1..=1 { for di in -1..=1 {
+            needed.insert(s2_flares_core::cell_key(cl.lon + di as f64 * step, cl.lat + dj as f64 * step));
+        }}
+    }
+    // cell key → the distinct dates that cell was observed CLEAR (relevant cells only).
+    let mut clear: HashMap<String, HashSet<String>> = HashMap::new();
+    view::read_clouds(glob, start, end, |glon, glat, date, cf| {
+        if cf <= s2_flares_core::CLEAR_MAX {
+            let k = s2_flares_core::cell_key(glon, glat);
+            if needed.contains(&k) { clear.entry(k).or_default().insert(date.to_string()); }
+        }
+    }).unwrap_or_else(|e| die(&e));
     let (mut rescored, mut joined) = (0usize, 0usize);
     for cl in clusters.iter_mut() {
         let mut dates: HashSet<String> = cl.detections.iter().map(|d| d.date.clone()).collect();

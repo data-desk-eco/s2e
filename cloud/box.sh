@@ -186,8 +186,14 @@ run(){
   local a=("$@") aoi="" rest=() i f
   for ((i=0; i<${#a[@]}; i++)); do
     if [ "${a[i]}" = "--aoi" ]; then
-      f="${a[i+1]:-}"; [ -f "$f" ] || f="$SELF_PWD/$f"   # box.sh cd'd to its own dir; resolve against the caller's
-      if [ -f "$f" ]; then aoi="$f"; i=$((i+1)); continue; fi   # i++ returns 0 at i=0 → set -e abort on old bash
+      # resolve --aoi against the caller's cwd AND the repo root (box.sh cd'd to its own
+      # dir = cloud/, so $PWD/.. is the root) — works run from the repo root OR from cloud/.
+      # an explicit --aoi that resolves NOWHERE is a hard error, never a silent fall-through
+      # to a 1-box bbox run (that fall-through once collapsed a sharded fleet run to 1 box).
+      f="${a[i+1]:-}"
+      for c in "$f" "$SELF_PWD/$f" "$PWD/../$f"; do [ -f "$c" ] && { aoi="$c"; break; }; done
+      [ -n "$aoi" ] || { echo "--aoi file not found: $f (looked in caller cwd + repo root)" >&2; exit 1; }
+      i=$((i+1)); continue   # i++ returns 0 at i=0 → set -e abort on old bash
     fi
     rest+=("${a[i]}")
   done

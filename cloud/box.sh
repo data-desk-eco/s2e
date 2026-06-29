@@ -295,8 +295,8 @@ pull(){
 #                detection pass; replaces the old coverage/ scan). AOI-agnostic; the scan
 #                footprint derives from it. an internal build artifact (not web-published).
 #   clusters/    the derived VIEW — s2-flares cluster over the fresh detections/, with the
-#                persistence denominator joined from clouds/ → clusters/mgrs=…/data_0.parquet,
-#                PARTITIONED BY mgrs like detections/ (each cluster carries its anchor's tile;
+#                persistence denominator joined from clouds/ → clusters/mgrs=…/data.parquet,
+#                one file PER TILE like detections/ (each cluster carries its anchor's tile;
 #                one row/cluster + nested detections). the web map re-clusters live in wasm.
 # FLEET note: each worker holds only its shard's CSVs/.cld, so we first GATHER every
 # member's files onto the head (member 0) — a single rollup there sees the whole archive

@@ -193,15 +193,8 @@ pub fn write_view(clusters: &[Cluster], out: &str) -> Result<(), String> {
         'glint_suspect':'BOOLEAN','date':'DATE','m_max_b12':'DOUBLE','peak_b11':'DOUBLE',\
         'pixels':'INTEGER','radiance':'DOUBLE','sun_elevation':'DOUBLE','sun_azimuth':'DOUBLE','m_lon':'DOUBLE','m_lat':'DOUBLE'}";
     // group members back into one row per cluster with a nested `detections` list.
-    // a clusters/ dir or s3 prefix (anything not ending .parquet) → partition by mgrs,
-    // mirroring detections/ (mgrs=…/data_0.parquet); a plain .parquet stays one file
-    // with mgrs as a body column. OVERWRITE keeps re-archiving idempotent per tile.
-    let part = if out.ends_with(".parquet") { String::new() }
-        else { ", PARTITION_BY (mgrs), OVERWRITE".to_string() };
-    let prelude = s3_prelude();
-    let sql = format!(
-        "{prelude}\
-         COPY (SELECT cluster_id AS id, any_value(mgrs) AS mgrs, \
+    let grouped = format!(
+        "SELECT cluster_id AS id, any_value(mgrs) AS mgrs, \
            any_value(cluster_lon) AS lon, any_value(cluster_lat) AS lat, \
            any_value(cluster_max_b12) AS max_b12, any_value(cluster_avg_b12) AS avg_b12, \
            any_value(cluster_radiance) AS radiance, \
@@ -215,9 +208,29 @@ pub fn write_view(clusters: &[Cluster], out: &str) -> Result<(), String> {
            any_value(min_glint) AS min_glint, any_value(glint_suspect) AS glint_suspect, \
            list(struct_pack(date := date, max_b12 := m_max_b12, peak_b11 := peak_b11, pixels := pixels, radiance := radiance, \
              sun_elevation := sun_elevation, sun_azimuth := sun_azimuth, lon := m_lon, lat := m_lat) ORDER BY date) AS detections \
-         FROM read_csv('{m}', header=true, nullstr='', columns={cols}) GROUP BY cluster_id) \
-         TO '{out}' (FORMAT PARQUET, COMPRESSION ZSTD{part})"
-    );
+         FROM read_csv('{m}', header=true, nullstr='', columns={cols}) GROUP BY cluster_id");
+    let prelude = s3_prelude();
+    // a plain `.parquet` → one file, mgrs in the body. a clusters/ dir or s3 prefix →
+    // one deterministic `mgrs=<tile>/data.parquet` PER TILE (mgrs in the path, not the
+    // body), mirroring detections/ exactly. we loop the tiles ourselves rather than
+    // PARTITION_BY because duckdb always indexes the partition filename (`data_0.parquet`
+    // — even FILENAME_PATTERN appends the index); a per-tile single-file COPY overwrites
+    // its own key idempotently and lands the clean `data.parquet` the readers expect.
+    let sql = if out.ends_with(".parquet") {
+        format!("{prelude}COPY ({grouped}) TO '{out}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+    } else {
+        let tiles: std::collections::BTreeSet<&str> = clusters.iter().map(|c| c.mgrs.as_str()).collect();
+        let base = out.trim_end_matches('/');
+        // a single-file COPY won't create the mgrs=…/ dir (PARTITION_BY did); s3 keys need
+        // no mkdir, a local path does.
+        if !base.starts_with("s3://") {
+            for t in &tiles { let _ = std::fs::create_dir_all(format!("{base}/mgrs={t}")); }
+        }
+        let copies: String = tiles.iter().map(|t| format!(
+            "COPY (SELECT * EXCLUDE(mgrs) FROM v WHERE mgrs='{t}') TO '{base}/mgrs={t}/data.parquet' (FORMAT PARQUET, COMPRESSION ZSTD);"
+        )).collect();
+        format!("{prelude}CREATE TEMP TABLE v AS {grouped};\n{copies}")
+    };
     let r = duckdb(&sql);
     let _ = std::fs::remove_file(&members);
     r

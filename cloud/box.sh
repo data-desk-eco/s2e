@@ -1,42 +1,11 @@
 #!/usr/bin/env bash
-# CloudFerro WAW3-2 end-to-end orchestration, co-located with the Copernicus
-# `eodata` archive (free in-region JP2 reads). One script, one auth path — and a
-# FLEET by default: bulk runs fan out across FLEET (default 4) VMs in parallel, the
-# AOI sharded one slice per member; a bbox/no-aoi run can't be split so it forces 1.
-#
-#   ./box.sh image                    bake the golden disk image once (full cold build →
-#                                     snapshot); later `up`s auto-boot from it in <1min
-#   ./box.sh up                       provision the fleet (keypair/secgroup/net/VMs/IPs)
-#   ./box.sh run <detect args>        shard the AOI, detached resumable detect on every member
-#   ./box.sh pull                     rsync every member's per-scene CSVs down to $LOCAL_DATA
-#   ./box.sh archive                  gather all members' CSVs+.cld to the head, roll up
-#                                     to s3://$BUCKET/{detections,clusters,clouds}
-#   ./box.sh verify                   prove every AOI feature scanned + 0 errored scenes (per member)
-#   ./box.sh publish                  make that archive a web-map backend: anonymous
-#                                     public-read + CORS, so DuckDB-wasm can read it
-#   ./box.sh wipe                     empty the archive bucket (confirms; FORCE=1 skips)
-#   ./box.sh cost                     estimate run cost so far (FLEET × uptime × flavor €/h)
-#   ./box.sh down                     scale to zero (delete every VM + floating IP)
-#   ./box.sh launch <detect args>     up → run, detached — kick off the fleet and walk away
-#                                     (boxes stay UP; finish later with archive|publish|down)
-#   ./box.sh all <detect args>        up → run → verify → archive → pull → down, hands-off
-#   ./box.sh ssh [i] | ip | watch     interactive login to member i / floating IPs / re-attach
-#
-# `run`/`pull`/`watch` are ssh-only; `up`/`down`/`archive`/`ip` use the openstack
-# API via the vendored 2fa openrc — non-interactive when a gitignored .env (repo
-# root or here) sets CLOUDFERRO_PASSWORD + CLOUDFERRO_TOTP_SECRET (the base32
-# authenticator seed); we feed the password and an oathtool code into its prompts.
-# quote .env values (CLOUDFERRO_PASSWORD='p@ss$word') so the shell reads them
-# verbatim. the box reads eodata with per-VM creds it pulls from the metadata
-# service at boot (cloud-init), so detection itself needs no secrets.
+# CloudFerro WAW3-2 fleet orchestration — see cloud/README.md for the subcommand
+# reference, auth (.env), fleet model, and the published archive layout.
 set -euo pipefail
 SELF_PWD="$PWD"             # caller's cwd — to resolve relative --aoi paths after the cd below
 cd "$(dirname "$0")"
 
-# GPU=1 → the full-tile nvJPEG2000 path: gpu cloud-init + an L40S vGPU flavor + the
-# NVIDIA driver image, and `run`/`parity` build with --features gpu. Override
-# FLAVOR/IMAGE/RATE for another gpu line (WAW3-2 quota here fits vm.l40s.1/.2; the
-# passthrough gpu.* flavors need a quota bump). The cpu path is unchanged (GPU unset).
+# GPU=1 → the full-tile nvJPEG2000 path (gpu cloud-init + L40S flavor + NVIDIA image).
 if [ "${GPU:-}" = 1 ]; then
   : "${CLOUD_INIT:=cloud-init-gpu.yaml}"; : "${FLAVOR:=vm.l40s.1}"
   : "${IMAGE:=Ubuntu 22.04 NVIDIA}"; : "${RATE:=0.45}"; : "${FLEET:=1}"
@@ -93,8 +62,7 @@ auth(){
   [ -n "${OS_TOKEN:-}" ] || { echo "auth failed: no keystone token — wrong password/TOTP (check .env), or token-issue rejected" >&2; exit 1; }
 }
 
-# ensure the shared infra exists (idempotent): keypair, ssh-only secgroup, private
-# net + router to the external gateway. shared by `up` and `image`.
+# idempotently ensure shared infra: keypair, ssh-only secgroup, private net + router.
 infra(){
   say "Keypair $KEYPAIR"
   [ -f "$KEYFILE" ] || ssh-keygen -t ed25519 -N '' -f "$KEYFILE" >/dev/null
@@ -111,18 +79,15 @@ infra(){
     openstack router set --external-gateway "$EXTNET" "$NET-rtr" >/dev/null
     openstack router add subnet "$NET-rtr" "$NET-sub" >/dev/null; }
 }
-# pick the boot image: an explicit IMAGE (incl. the gpu path) wins; else the golden
-# $BASEIMG snapshot if `image` has baked one (warm boot, <1min), else the stock distro
-# (cold first build). needs auth (a glance lookup) — callers run `auth` first.
+# pick the boot image: explicit IMAGE wins; else the golden $BASEIMG snapshot if baked
+# (warm <1min boot); else the stock distro (cold build). needs auth (a glance lookup).
 resolve_image(){
   [ -n "$IMAGE" ] && return
   if openstack image show "$BASEIMG" >/dev/null 2>&1; then IMAGE=$BASEIMG; say "Image $BASEIMG (golden → fast boot)"
   else IMAGE=$BASEOS; say "Image $BASEOS (no golden image — cold build; bake one with ./box.sh image)"; fi
 }
 
-# provision shared infra once, then boot the FLEET members IN PARALLEL — fan-out is the
-# point. each member gets a floating IP cached in .box-ip-<i>; an existing member is
-# reused (idempotent). boot is ~5min on the stock distro, <1min from the golden image.
+# provision shared infra, then boot the FLEET in parallel (idempotent; reuses members).
 up(){
   auth; infra; resolve_image
   local netid eoid; netid=$(openstack network show "$NET" -f value -c id); eoid=$(openstack network show "$EODATANET" -f value -c id)
@@ -131,11 +96,8 @@ up(){
   printf '\n\033[1;32m✓ provisioned %s members\033[0m  →  ./box.sh ssh [i]\n' "$FLEET"
 }
 
-# bake/refresh the golden image: boot ONE stock box, let cloud-init do the full cold
-# install+build, strip its per-VM creds + cloud-init state, snapshot the disk to $BASEIMG,
-# then tear the box down. afterwards every `up` auto-boots from $BASEIMG (resolve_image),
-# where cloud-init's guards no-op against the on-disk toolchain/tree → a member is ready in
-# well under a minute (only the per-VM creds + start_member's incremental rebuild run live).
+# bake/refresh the golden image: boot one stock box → full cold build → strip per-VM
+# creds + cloud-init state → snapshot to $BASEIMG → tear down. (see README)
 image(){
   auth; infra
   local netid eoid; netid=$(openstack network show "$NET" -f value -c id); eoid=$(openstack network show "$EODATANET" -f value -c id)
@@ -172,24 +134,18 @@ ip(){
   done
 }
 
-# ephemeral boxes, recycled floating IPs → skip host-key pinning entirely (see
-# SSHOPTS). `exec` hands the process to ssh so the interactive session doesn't slurp
-# the rest of this script's stdin. optional member index (default the head, 0).
+# interactive login to member ${1:-0}. `exec` so ssh doesn't slurp our stdin.
 go_ssh(){ exec ssh $SSHOPTS -i "$KEYFILE" "eouser@$(mip "${1:-0}")"; }
 
-# shard the --aoi across the fleet (round-robin → balanced; a tile two terminals share
-# landing on two boxes is fine — each writes its own <id>/ dir and the rollup dedups),
-# scp each shard to its member, rebuild (git pull → latest detector) and launch the
-# detached resumable detect on every member IN PARALLEL. a bbox/no-aoi run can't be
-# split → one member. .fleet pins how many ran so later ops fan out to match.
+# shard the --aoi round-robin across the fleet, scp each shard, rebuild, launch the
+# detached resumable detect per member in parallel. bbox/no-aoi → 1 member. .fleet
+# pins how many ran so later ops fan out to match. (see README)
 run(){
   local a=("$@") aoi="" rest=() i f
   for ((i=0; i<${#a[@]}; i++)); do
     if [ "${a[i]}" = "--aoi" ]; then
-      # resolve --aoi against the caller's cwd AND the repo root (box.sh cd'd to its own
-      # dir = cloud/, so $PWD/.. is the root) — works run from the repo root OR from cloud/.
-      # an explicit --aoi that resolves NOWHERE is a hard error, never a silent fall-through
-      # to a 1-box bbox run (that fall-through once collapsed a sharded fleet run to 1 box).
+      # resolve --aoi against caller cwd + repo root; resolving NOWHERE is a hard error
+      # (never a silent fall-through to a 1-box bbox run that collapses a sharded fleet).
       f="${a[i+1]:-}"
       for c in "$f" "$SELF_PWD/$f" "$PWD/../$f"; do [ -f "$c" ] && { aoi="$c"; break; }; done
       [ -n "$aoi" ] || { echo "--aoi file not found: $f (looked in caller cwd + repo root)" >&2; exit 1; }
@@ -207,13 +163,8 @@ run(){
   say "Fleet detached & resumable — streaming progress (Ctrl-C is safe, the runs continue)"
   watch
 }
-# one member: wait_ready for cloud-init (a stock box installs rust/gdal + first build,
-# AFTER `server create --wait` returns ACTIVE — so launch/all can't build until the
-# toolchain + a built tree exist; a golden-image box clears this near-instantly), upload
-# its shard, rebuild, launch the detached detect. run under `&`.
-# poll until cloud-init has produced a working toolchain + built tree (and rides out sshd
-# not-yet-up: mssh fails → retry). cold box ~5-8min; a golden-image boot passes almost at
-# once. capped ~20min so a wedged boot surfaces. $1 = member index (numeric or 'img').
+# poll until cloud-init produced a working toolchain + built tree (rides out sshd-not-
+# yet-up: mssh fails → retry). cold box ~5-8min; golden boot near-instant. capped ~20min.
 wait_ready(){
   local i=$1 w=0
   until mssh "$i" 'test -f "$HOME/.cargo/env" && test -x '"$REPO_DIR"'/target/release/s2-flares' 2>/dev/null; do
@@ -229,8 +180,7 @@ start_member(){
     aoiarg="--aoi _aoi.geojson"; fi
   say "  [$i] build (incremental)$feat"
   mssh "$i" "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && ${cudaenv}cargo build --release -q -p s2-flares-cli$feat"
-  # stop any detect already running on this member first → re-run is idempotent (resumable),
-  # never two detects racing on the same per-scene CSVs. then launch the fresh one detached.
+  # stop any running detect first (re-run is idempotent/resumable — no racing detects).
   mssh "$i" "pkill -x s2-flares 2>/dev/null; sleep 1; cd $REPO_DIR && nohup bash -lc './target/release/s2-flares detect --source cdse $aoiarg ${rest[*]} --out $OUT' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  [$i] detect started'"
 }
 # round-robin split → /tmp/_shard-<i>.geojson (balanced slices; keeps the cli generic).
@@ -241,11 +191,10 @@ for i in range(n): json.dump({'type':'FeatureCollection','features':fs[i::n]}, o
 PY
 }
 
-# stream every member's detect log (prefixed [i]) until ALL have printed `done:` — or a
-# member's detect vanished after producing output (a crash). unbounded like the single-
-# box watch: a wide run outlasts any fixed cap, and a cap would let `all` fall through
-# mid-run. one ssh per member per cycle returns the new slice then a 0x1e-prefixed
-# `<lines> <state>` tag (RS never occurs in a log line, so the split is unambiguous).
+# stream every member's detect log (prefixed [i]) until all printed `done:` or crashed
+# (detect vanished after output). unbounded — a wide run outlasts any cap. one ssh/member/
+# cycle returns the new slice + a 0x1e-prefixed `<lines> <state>` tag (RS never in a log
+# line, so the split is unambiguous).
 watch(){
   local n i; n=$(fleetn); local -a seen
   for i in $(seq 0 $((n-1))); do seen[i]=0; done
@@ -264,9 +213,8 @@ watch(){
   done
 }
 
-# the gpu↔cpu parity gate (gpu box only): assert nvJPEG2000 detections == GDAL/OpenJPEG
-# detections byte-for-byte over real scenes. PARITY_BBOX a small test region; optional
-# PARITY_TILE/START/END narrow it. lossless JP2 → identical pixels → identical core output.
+# gpu↔cpu parity gate (gpu box only): nvJPEG2000 == GDAL/OpenJPEG detections byte-for-
+# byte over real scenes. set PARITY_BBOX (small); narrow with PARITY_TILE/START/END.
 parity(){
   : "${PARITY_BBOX:?set PARITY_BBOX=W,S,E,N (a small test region)}"
   say "Parity gpu-vs-cpu on head"
@@ -284,33 +232,18 @@ pull(){
   echo "  $(find "$LOCAL_DATA" -name '*.csv' | wc -l | tr -d ' ') scene CSVs in $LOCAL_DATA"
 }
 
-# roll the per-scene CSVs up into BOTH published artifacts in one pass:
-#   detections/  the raw archive — hive parquet s3://$BUCKET/detections/mgrs=…/
-#                data.parquet, ONE deterministic-key parquet PER TILE (not per scene).
-#                each tile file is SELECT DISTINCT over every AOI's CSVs for that tile
-#                (cross-AOI/cross-shard union + dedup), ORDER BY date so row-group date
-#                stats prune within a file.
-#   clouds/      the CLOUD MASK — clouds/data.parquet, one row per (~100 m cell, date)
-#                emitted DURING detection (the persistence denominator folded into the
-#                detection pass; replaces the old coverage/ scan). AOI-agnostic; the scan
-#                footprint derives from it. an internal build artifact (not web-published).
-#   clusters/    the derived VIEW — s2-flares cluster over the fresh detections/, with the
-#                persistence denominator joined from clouds/ → clusters/mgrs=…/data.parquet,
-#                one file PER TILE like detections/ (each cluster carries its anchor's tile;
-#                one row/cluster + nested detections). the web map re-clusters live in wasm.
-# FLEET note: each worker holds only its shard's CSVs/.cld, so we first GATHER every
-# member's files onto the head (member 0) — a single rollup there sees the whole archive
-# at once, giving a clean per-tile DISTINCT (no cross-box last-write-wins when adjacent
-# terminals share a tile) AND a complete cloud mask. then duckdb (rollup) + the cli
-# (cluster) both run on the head: the cluster step is now pure duckdb on the project
-# bucket (S2_S3_*) — the clouds/ join needs no eodata/gdal, so no second credential set.
+# roll the per-scene CSVs up into the published artifacts (detections/, clouds/,
+# clusters/) in one head-side pass, then refresh coverage.geojson. each worker holds
+# only its shard, so we GATHER every member's files onto the head first — one rollup
+# there sees the whole archive (clean per-tile DISTINCT, complete cloud mask). duckdb
+# (rollup) + the cli (cluster) then run on the head. see cloud/README.md for the layout.
 archive(){
   auth
   openstack container show "$BUCKET" >/dev/null 2>&1 || { say "Bucket $BUCKET"; openstack container create "$BUCKET" >/dev/null; }
   local ak sk; read -r ak sk < <(s3creds)
   local n i; n=$(fleetn)
-  # gather workers' CSVs → head. tar piped through the local host (workers can't ssh
-  # each other; CSVs are tiny so this is cheap). different <id>/ dirs → no collision.
+  # gather workers' CSVs → head (tar piped via local host — workers can't ssh each
+  # other; CSVs are tiny). distinct <id>/ dirs → no collision.
   for ((i=1; i<n; i++)); do
     say "Gather $(mvm "$i") CSVs → head"
     mssh "$i" "cd $REPO_DIR/$OUT 2>/dev/null && tar cf - . || true" | mssh 0 "mkdir -p $REPO_DIR/$OUT && tar xf - -C $REPO_DIR/$OUT"
@@ -319,15 +252,54 @@ archive(){
   local b64; b64=$(printf '%s' "$ARCHIVER" | base64 | tr -d '\n')
   mssh 0 "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' OUT='$REPO_DIR/$OUT' bash"
   say "Cluster view (+ clear-sky persistence, joined against clouds/) → s3://$BUCKET/clusters/mgrs=…/"
-  # the persistence denominator now folds in via the cloud mask: a spatial join of each
-  # anchor's ~100 m cell against clouds/ — pure duckdb (S2_S3_*), no eodata/gdal, no 2nd
-  # SCL pass. the persistence window equals the detection window (START/END drive both).
+  # persistence folds in via the cloud mask (anchor's ~100 m cell ⋈ clouds/) — pure
+  # duckdb, no 2nd SCL pass. persistence window == detection window (START/END drive both).
   mssh 0 "cd $REPO_DIR && \
         S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
         S2_S3_ACCESS_KEY='$ak' S2_S3_SECRET_KEY='$sk' \
         ./target/release/s2-flares cluster --concurrency ${COVERAGE_CONCURRENCY:-16} \
           --archive 's3://$BUCKET/detections/**/*.parquet' --clouds 's3://$BUCKET/clouds/data.parquet' \
           --out 's3://$BUCKET/clusters' --start '${START:-2015-01-01}' --end '${END:-2100-01-01}'"
+  coverage || true   # refresh the scanned-extent overlay from the live shards (best-effort)
+}
+
+# (re)build s3://$BUCKET/coverage.geojson — one Polygon per scanned AOI feature, the
+# web map's coverage overlay + archive-vs-detect test. merges INTO the existing object
+# by feature id (re-scan replaces, new AOIs append, no dupes) → coverage grows
+# monotonically across runs. features come from a local AOI file ($1) or, by default,
+# the union of the live fleet's shards. stamped {name, start, end, scanned}. needs aws.
+coverage(){
+  command -v aws >/dev/null || { say "coverage needs aws-cli — skipping coverage.geojson"; return 0; }
+  auth; local ak sk; read -r ak sk < <(s3creds)
+  local tmp; tmp=$(mktemp -d); trap "rm -rf '$tmp'" RETURN
+  if [ -n "${1:-}" ]; then
+    local src=""; for c in "$1" "$SELF_PWD/$1" "$PWD/../$1"; do [ -f "$c" ] && { src="$c"; break; }; done
+    [ -n "$src" ] || { echo "coverage: AOI file not found: $1" >&2; return 1; }
+    cp "$src" "$tmp/aoi-0.json"
+  else local n i; n=$(fleetn); for i in $(seq 0 $((n-1))); do mssh "$i" "cat $REPO_DIR/_aoi.geojson 2>/dev/null" > "$tmp/aoi-$i.json" || true; done; fi
+  local s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
+    aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3)
+  "${s3[@]}" cp "s3://$BUCKET/coverage.geojson" "$tmp/cur.json" 2>/dev/null || echo '{"type":"FeatureCollection","features":[]}' > "$tmp/cur.json"
+  START="${START:-2015-01-01}" END="${END:-2100-01-01}" python3 - "$tmp" <<'PY' || { say "coverage: no AOI features (bbox run?) — skipped"; return 0; }
+import json,os,glob,sys,datetime
+tmp=sys.argv[1]
+cov=json.load(open(f'{tmp}/cur.json')); feats={f['properties']['id']:f for f in cov.get('features',[]) if f.get('properties',{}).get('id')}
+start,end,scanned=os.environ['START'],os.environ['END'],os.environ.get('SCANNED') or datetime.date.today().isoformat()
+n=0
+for af in glob.glob(f'{tmp}/aoi-*.json'):
+    try: src=json.load(open(af))
+    except Exception: continue
+    for i,f in enumerate(src.get('features',[])):
+        p=f.get('properties') or {}
+        fid=next((p[k] for k in ('id','ProjectID') if isinstance(p.get(k),str)), None)
+        if not (fid and f.get('geometry')): continue
+        feats[fid]={'type':'Feature','geometry':f['geometry'],
+                    'properties':{'id':fid,'name':p.get('name',''),'start':start,'end':end,'scanned':scanned}}; n+=1
+if not n: sys.exit(1)
+json.dump({'type':'FeatureCollection','features':list(feats.values())}, open(f'{tmp}/new.json','w'))
+print(f'  coverage.geojson: {n} scanned features merged → {len(feats)} total')
+PY
+  "${s3[@]}" cp "$tmp/new.json" "s3://$BUCKET/coverage.geojson"
 }
 
 # runs on the head: one COPY per tile (union of all that tile's non-empty scene CSVs)
@@ -345,41 +317,31 @@ tiles=$(for f in "$OUT"/*/*.csv; do [ "$(wc -l <"$f")" -gt 1 ] && b=$(basename "
   for m in $tiles; do
     echo "COPY (SELECT DISTINCT * EXCLUDE(mgrs) FROM read_csv('$OUT/*/${m}_*.csv', union_by_name=true) ORDER BY date) TO 's3://$BUCKET/detections/mgrs=$m/data.parquet' (FORMAT parquet);"
   done
-  # clouds/ the CLOUD MASK — one row per (~100 m cell, date) = glon,glat,date,cloud_frac,
-  # emitted during detection over EVERY scene (incl. flareless/cloudy: the clear-but-unlit
-  # looks that are the honest persistence denominator). AOI-agnostic; overlapping scans of
-  # a cell on a date dedup (DISTINCT). REPLACES coverage/: the cluster step joins each
-  # anchor's cell against this for n_clear_obs (no second SCL pass), and the scan FOOTPRINT
-  # derives from it (which cells/dates were observed). an internal build artifact — kept in
-  # S3 to re-join at a different date window without re-reading SCL; the browser never reads it.
+  # clouds/ the cloud mask — one row per (~100 m cell, date), the persistence denominator
+  # joined into clusters/ at build time. internal artifact; browser never reads it. (README)
   echo "COPY (SELECT DISTINCT glon,glat,date,cloud_frac FROM read_csv('$OUT/*/*.cld', union_by_name=true) ORDER BY date) TO 's3://$BUCKET/clouds/data.parquet' (FORMAT parquet);"
 } | "$DDB"
 "$DDB" -c "$S3 SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/detections/**/data.parquet', hive_partitioning=true);"
 EOS
 )
 
-# make the archive a web-map backend: anonymous public-read on detections/* +
-# clusters/* + vnf/* + CORS, so a browser (e.g. DuckDB-wasm) can range-read the parquet
-# directly — scalar cluster pins from clusters/, raw-detection reclustering from
-# detections/, VIIRS Nightfire daily observations from vnf/ (burnoff's VNF mode).
-# clouds/ is an INTERNAL build artifact (the anchor⋈mask join runs at
-# build time, baked into clusters/) so it is NOT published. one-time per bucket; needs
-# aws-cli (RadosGW S3 policy/CORS aren't openstack/swift operations).
+# web-map backend: anonymous public-read on detections/* + clusters/* + vnf/* +
+# coverage.geojson + CORS, so a browser (DuckDB-wasm) can range-read directly. clouds/
+# stays private (internal build artifact). one-time per bucket; needs aws-cli. (README)
 publish(){
   auth
   command -v aws >/dev/null || { echo "publish needs aws-cli (brew install awscli)" >&2; exit 1; }
   local ak sk; read -r ak sk < <(s3creds)
   local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api)
-  say "Publishing s3://$BUCKET/{detections,clusters,vnf} for web-map access (public-read + CORS)"
+  say "Publishing s3://$BUCKET/{detections,clusters,vnf,coverage.geojson} for web-map access (public-read + CORS)"
   "${aws_s3[@]}" put-bucket-cors --bucket "$BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
-  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters}/…"
+  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*","arn:aws:s3:::'"$BUCKET"'/coverage.geojson"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
+  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters,coverage.geojson}…"
 }
 
-# empty the archive bucket (every object; the bucket stays) — e.g. to start fresh
-# after a layout change orphans the old prefixes. IRREVERSIBLE: aws s3 rm doesn't
-# prompt, so we do, requiring the bucket name typed back (FORCE=1 skips, for scripts).
+# empty the archive bucket (the bucket stays). IRREVERSIBLE — confirm by typing the
+# bucket name back (FORCE=1 skips, for scripts).
 wipe(){
   auth
   command -v aws >/dev/null || { echo "wipe needs aws-cli (brew install awscli)" >&2; exit 1; }
@@ -397,9 +359,8 @@ wipe(){
   echo "  bucket emptied."
 }
 
-# run cost, instantly: CloudFerro bills the flavor by the hour, so FLEET × uptime ×
-# RATE is a deterministic local estimate — the billing portal aggregates daily, far
-# too coarse/slow to reflect a run in flight. assumes auth; `cost` wraps it with auth.
+# instant local cost estimate: FLEET × uptime × RATE (billing portal is daily, too
+# coarse for a run in flight). assumes auth; `cost` wraps it.
 costline(){
   local t; t=$(openstack server show "$(mvm 0)" -f value -c created 2>/dev/null) || return 1
   t=${t%Z}; t=${t%.*}; t=$(date -ju -f "%Y-%m-%dT%H:%M:%S" "$t" +%s 2>/dev/null || date -u -d "$t" +%s)
@@ -424,17 +385,10 @@ down_member(){
   [ -n "$fip" ] && { openstack floating ip delete "$fip" >/dev/null 2>&1 || true; }
 }
 
-# PROVE a run is complete and clean, per member, BEFORE the gather/archive — two
-# assertions over each box's OUT (born of the run that silently hid 25 of 81 LNG
-# terminals from the published archive):
-#   1. coverage — every AOI feature in this member's shard was reached. detect writes
-#      OUT/<id>/<mgrs>_<date>.csv (header-only even when flareless), so a feature with
-#      NO subdir == never scanned. id precedence mirrors load_aois() in main.rs.
-#   2. no errors — every attempted scene succeeded. a read/detect FAIL leaves a sibling
-#      <mgrs>_<date>.err (cleared on a later successful retry); ANY remaining .err means
-#      a scene is unproven. the path to green is just: re-run (resumable) until clean.
-# verifies each member against its OWN shard (_aoi.geojson); summed, that is the whole
-# AOI. exits nonzero if any member has a gap/error; `all` gates the teardown on it.
+# prove a run is complete + clean per member before archive: (1) every AOI feature in
+# the shard has an OUT/<id>/ dir (header-only even when flareless → no subdir == never
+# scanned); (2) no leftover <mgrs>_<date>.err. nonzero if any gap/error; `all` gates the
+# teardown on it. (see cloud/README.md)
 verify(){
   local n i rc=0; n=$(fleetn)
   for i in $(seq 0 $((n-1))); do
@@ -464,17 +418,11 @@ PY" || rc=1
   return $rc
 }
 
-# combined kick-off — provision the fleet AND start the detached, sharded detection in
-# one command, then leave the boxes UP. our most common entrypoint: fire a run over a
-# few terminals and come back later to archive|publish|down. unlike `all` it does NOT
-# archive/scale-to-zero — `run` already detaches per box (nohup), so the local watch
-# streaming is severable (Ctrl-C / close the session) without stopping the runs.
+# up → run, detached, boxes left UP (the common entrypoint; archive/down later).
 launch(){ up; run "$@"; }
 
-# hands-off pipeline: provision the fleet, detect (sharded), prove it, archive to object
-# storage (gather + rollup), pull locally, scale to zero. the archive (S3) and local
-# CSVs persist; only the boxes are ephemeral. `down` fires only when `verify` proves
-# every AOI feature was scanned — a gap keeps the fleet up for a resumable re-run.
+# hands-off: up → run → verify → archive → pull → down. `down` fires only once verify
+# proves every AOI feature was scanned — a gap keeps the fleet up for a resumable re-run.
 all(){ up; run "$@"
   if verify; then archive; pull; down
   else say "verify found unscanned AOI features — fleet kept up. re-run (resumable), then ./box.sh archive && ./box.sh down"; fi; }
@@ -482,6 +430,6 @@ all(){ up; run "$@"
 case "${1:-}" in
   up) up;; image) image;; ip) ip;; ssh) shift; go_ssh "${1:-0}";; cost) cost;; down) down;;
   run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; wipe) wipe;; parity) parity;;
-  launch) shift; launch "$@";; all) shift; all "$@";;
-  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | pull | archive | verify | publish | wipe | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
+  coverage) shift; coverage "${1:-}";; launch) shift; launch "$@";; all) shift; all "$@";;
+  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | pull | archive | coverage [aoi] | verify | publish | wipe | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
 esac

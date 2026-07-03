@@ -21,7 +21,12 @@ COPY (
          round(sum(CapacityinMtpa), 2)                AS capacity_mtpa,
          ST_MakeEnvelope(min(Longitude) - 0.02, min(Latitude) - 0.02,
                          max(Longitude) + 0.02, max(Latitude) + 0.02) AS geom
-  FROM ST_Read('aoi/lng-terminals-2025-09.geojson')
+  -- gem places prelude flng (T100000130339) ~165 km sse of the vessel's true browse
+  -- basin mooring despite claiming "exact"; override with the vnf-derived position.
+  FROM (SELECT * REPLACE (
+          CASE ProjectID WHEN 'T100000130339' THEN 123.3158 ELSE Longitude END AS Longitude,
+          CASE ProjectID WHEN 'T100000130339' THEN -13.7847 ELSE Latitude  END AS Latitude)
+        FROM ST_Read('aoi/lng-terminals-2025-09.geojson'))
   WHERE FacilityType = 'export'
     AND Status IN ('operating', 'construction', 'idled', 'mothballed', 'retired')
   GROUP BY ProjectID

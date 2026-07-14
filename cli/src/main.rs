@@ -262,10 +262,15 @@ fn run_detect(c: &Common, out: &str, pool: &rayon::ThreadPool) {
     let reader = read::make_reader(c.gpu, c.region.is_some(), harmonize).unwrap_or_else(|e| die(&e));
     eprintln!("detect: {} aoi(s) | {start} → {end} | b12≥{} b11≥{} | source={}{} → {out}/",
         aois.len(), t.b12_min, t.b11_min, c.source, if c.gpu { " gpu" } else if c.region.is_some() { " bulk" } else { "" });
-    let (mut scenes, mut detected, mut errored) = (0usize, 0usize, 0usize);
+    let (mut scenes, mut detected, mut errored, mut search_errors) = (0usize, 0usize, 0usize, 0usize);
     for aoi in &aois {
         let mut items = match stac::search(aoi.bbox, &start, &end, c.cloud, &c.source) {
-            Ok(v) => v, Err(e) => { eprintln!("  {} search FAIL: {e}", aoi.id); continue; }
+            Ok(v) => v,
+            Err(e) => {
+                search_errors += 1;
+                eprintln!("  {} search FAIL: {e}", aoi.id);
+                continue;
+            }
         };
         filter_tiles(c, &mut items);
         scenes += items.len();
@@ -308,6 +313,13 @@ fn run_detect(c: &Common, out: &str, pool: &rayon::ThreadPool) {
         });
         detected += det; errored += errs;
         eprintln!("  {} {}: {} scenes ({} new, {} cached, {} errored), {} detections", aoi.id, aoi.name, items.len(), done, skipped, errs, det);
+    }
+    if search_errors > 0 {
+        // Do not emit the `done:` sentinel: box.sh/watch and operators must not mistake
+        // a catalogue with omitted AOIs for a complete run. Scene CSVs remain cached,
+        // so rerunning is still presence==done/resumable.
+        eprintln!("\nincomplete: {search_errors} AOI search(es) failed after retries; rerun to resume → {out}/");
+        std::process::exit(1);
     }
     eprintln!("\ndone: {scenes} scenes, {errored} errored, {detected} detections → {out}/");
     eprintln!("archive to parquet, then: s2-flares cluster --archive '{out}/**/*.parquet' --out clusters.parquet");

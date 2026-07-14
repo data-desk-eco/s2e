@@ -2,6 +2,8 @@
 //! hrefs; cdse copernicus eopf s3://eodata jp2). blocking http (ureq) + serde_json
 //! so the fan-out can be plain rayon threads, no async runtime.
 
+use std::time::Duration;
+
 use s2_flares_core::epsg_from_mgrs;
 use serde_json::Value;
 
@@ -54,6 +56,40 @@ fn epsg_of(it: &Value, source: &str) -> i32 {
     }
 }
 
+const STAC_ATTEMPTS: usize = 7;
+
+fn retryable(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::Transport(_) => true,
+        ureq::Error::Status(code, _) => *code == 408 || *code == 429 || *code >= 500,
+    }
+}
+
+/// POST one STAC page, retrying transient transport/HTTP failures and malformed
+/// responses. CDSE intermittently returns 500/504 under bulk load; failing an AOI
+/// search silently omits that site, so retry each pagination request in place rather
+/// than forcing a costly second run over the entire AOI catalogue.
+fn post_page(url: &str, body: &Value) -> Result<Value, String> {
+    for attempt in 1..=STAC_ATTEMPTS {
+        let result = ureq::post(url)
+            .set("Content-Type", "application/json")
+            .send_json(body.clone());
+        let err = match result {
+            Ok(resp) => match resp.into_json() {
+                Ok(data) => return Ok(data),
+                Err(e) => format!("stac json: {e}"),
+            },
+            Err(e) if retryable(&e) => format!("stac http: {e}"),
+            Err(e) => return Err(format!("stac http: {e}")),
+        };
+        if attempt == STAC_ATTEMPTS { return Err(format!("{err} after {STAC_ATTEMPTS} attempts")); }
+        let delay = 1u64 << (attempt - 1).min(4); // 1, 2, 4, 8, then 16 s
+        eprintln!("  stac transient failure; retry {}/{} in {delay}s: {err}", attempt + 1, STAC_ATTEMPTS);
+        std::thread::sleep(Duration::from_secs(delay));
+    }
+    unreachable!()
+}
+
 /// search a date window over a bbox, dedup by mgrs tile + date keeping lowest
 /// cloud cover, return normalised items (cloud cover ≤ max_cloud_cover).
 pub fn search(bbox: [f64; 4], start: &str, end: &str, max_cloud_cover: f64, source: &str) -> Result<Vec<Item>, String> {
@@ -69,11 +105,7 @@ pub fn search(bbox: [f64; 4], start: &str, end: &str, max_cloud_cover: f64, sour
     let mut url = format!("{base}/search");
     let mut body = payload;
     loop {
-        let resp = ureq::post(&url)
-            .set("Content-Type", "application/json")
-            .send_json(body.clone())
-            .map_err(|e| format!("stac http: {e}"))?;
-        let data: Value = resp.into_json().map_err(|e| format!("stac json: {e}"))?;
+        let data = post_page(&url, &body)?;
         if let Some(arr) = data["features"].as_array() { features.extend(arr.iter().cloned()); }
         // follow the rel:next link (post body) if present.
         let next = data["links"].as_array().and_then(|ls| ls.iter().find(|l| l["rel"] == "next").cloned());

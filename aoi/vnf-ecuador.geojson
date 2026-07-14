@@ -1,0 +1,2004 @@
+{
+  "type": "FeatureCollection",
+  "name": "vnf-ecuador",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_917",
+        "name": "VIIRS flare 917",
+        "flare_id": 917,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.77481901296342,
+          -0.0030324648681145775
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_918",
+        "name": "VIIRS flare 918",
+        "flare_id": 918,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.86259441158175,
+          -0.3622376366952
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_919",
+        "name": "VIIRS flare 919",
+        "flare_id": 919,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.86575437210446,
+          -0.4832418550141264
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_920",
+        "name": "VIIRS flare 920",
+        "flare_id": 920,
+        "type": "downstream",
+        "category": "refinery",
+        "facility_type": "N/A",
+        "facility_name": "PETROECUADOR - SHUSHUFINDI"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.65455455680667,
+          -0.19492282445519094
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_922",
+        "name": "VIIRS flare 922",
+        "flare_id": 922,
+        "type": "downstream",
+        "category": "refinery",
+        "facility_type": "N/A",
+        "facility_name": "PETROECUADOR - SHUSHUFINDI"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.65318090034823,
+          -0.19999161610702507
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_923",
+        "name": "VIIRS flare 923",
+        "flare_id": 923,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.85663435205676,
+          -0.40759747506429445
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_924",
+        "name": "VIIRS flare 924",
+        "flare_id": 924,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.869310960596,
+          -0.42079906733102596
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_925",
+        "name": "VIIRS flare 925",
+        "flare_id": 925,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.78314228105228,
+          -0.011863252098752261
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_926",
+        "name": "VIIRS flare 926",
+        "flare_id": 926,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.80150680647313,
+          -0.4230334028175362
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_927",
+        "name": "VIIRS flare 927",
+        "flare_id": 927,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.83177461163814,
+          -0.20158615394464283
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_928",
+        "name": "VIIRS flare 928",
+        "flare_id": 928,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.93910771971808,
+          -1.1199789075057414
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_929",
+        "name": "VIIRS flare 929",
+        "flare_id": 929,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.79491884877918,
+          -0.4317645116043292
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_930",
+        "name": "VIIRS flare 930",
+        "flare_id": 930,
+        "type": "volcano"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -78.34068307429082,
+          -2.005325144998513
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_931",
+        "name": "VIIRS flare 931",
+        "flare_id": 931,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.90315334320184,
+          -0.48684403447754965
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_932",
+        "name": "VIIRS flare 932",
+        "flare_id": 932,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.84711707205047,
+          -0.22226366601972403
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_934",
+        "name": "VIIRS flare 934",
+        "flare_id": 934,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.7514682905571,
+          -0.15672540255239747
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_935",
+        "name": "VIIRS flare 935",
+        "flare_id": 935,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.8721126923032,
+          -0.4042011907251611
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_936",
+        "name": "VIIRS flare 936",
+        "flare_id": 936,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.90400921697085,
+          -0.5707346684884861
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_937",
+        "name": "VIIRS flare 937",
+        "flare_id": 937,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.87054041565,
+          -0.2929258097537015
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_938",
+        "name": "VIIRS flare 938",
+        "flare_id": 938,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.87998120758425,
+          -0.43880771617272996
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_939",
+        "name": "VIIRS flare 939",
+        "flare_id": 939,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.82905490178771,
+          -0.3403251702821855
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_940",
+        "name": "VIIRS flare 940",
+        "flare_id": 940,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.03734821936429,
+          -0.3527705819450509
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_942",
+        "name": "VIIRS flare 942",
+        "flare_id": 942,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.86080095825449,
+          -0.37254046584907624
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_943",
+        "name": "VIIRS flare 943",
+        "flare_id": 943,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.86144567140379,
+          -0.11211357341294761
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_944",
+        "name": "VIIRS flare 944",
+        "flare_id": 944,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.84361912218948,
+          -0.5166758920227356
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_945",
+        "name": "VIIRS flare 945",
+        "flare_id": 945,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.84489456278324,
+          -0.1995240114594644
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_946",
+        "name": "VIIRS flare 946",
+        "flare_id": 946,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.74745634406254,
+          -0.16988233525281954
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_948",
+        "name": "VIIRS flare 948",
+        "flare_id": 948,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.93753437591552,
+          -0.34529942944508246
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_949",
+        "name": "VIIRS flare 949",
+        "flare_id": 949,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.79838952628151,
+          -0.6039635546662413
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_950",
+        "name": "VIIRS flare 950",
+        "flare_id": 950,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.88912274012021,
+          -0.38795230011561
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_951",
+        "name": "VIIRS flare 951",
+        "flare_id": 951,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.80543995123901,
+          -0.6816086391684377
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_952",
+        "name": "VIIRS flare 952",
+        "flare_id": 952,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.83017079432526,
+          -0.35490721583499213
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_953",
+        "name": "VIIRS flare 953",
+        "flare_id": 953,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.57580993028103,
+          -0.03798734860145391
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_954",
+        "name": "VIIRS flare 954",
+        "flare_id": 954,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.87724450461609,
+          -0.6070351446437166
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_955",
+        "name": "VIIRS flare 955",
+        "flare_id": 955,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.95827974348094,
+          -0.5784834894420154
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_956",
+        "name": "VIIRS flare 956",
+        "flare_id": 956,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.07034245498235,
+          -0.4121503572666735
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_957",
+        "name": "VIIRS flare 957",
+        "flare_id": 957,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.88611366671556,
+          -0.706597268577277
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_958",
+        "name": "VIIRS flare 958",
+        "flare_id": 958,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.74882906225703,
+          -0.11985671040454975
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_959",
+        "name": "VIIRS flare 959",
+        "flare_id": 959,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.63388819009288,
+          -0.37631984762838266
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_960",
+        "name": "VIIRS flare 960",
+        "flare_id": 960,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.8830524012372,
+          -0.8429764486993685
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_961",
+        "name": "VIIRS flare 961",
+        "flare_id": 961,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.88523706156312,
+          -0.6427609605293697
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_962",
+        "name": "VIIRS flare 962",
+        "flare_id": 962,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.0191253642523,
+          -0.5329358115413364
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_963",
+        "name": "VIIRS flare 963",
+        "flare_id": 963,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.86611983944422,
+          -0.3279818196346271
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_964",
+        "name": "VIIRS flare 964",
+        "flare_id": 964,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.78839568327147,
+          -0.1084354700270544
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_965",
+        "name": "VIIRS flare 965",
+        "flare_id": 965,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.78844722513853,
+          -0.47192689658897896
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_966",
+        "name": "VIIRS flare 966",
+        "flare_id": 966,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.36938487579475,
+          -0.3136452065766188
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_968",
+        "name": "VIIRS flare 968",
+        "flare_id": 968,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.88124944331659,
+          -0.3307620309136146
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_969",
+        "name": "VIIRS flare 969",
+        "flare_id": 969,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.89066123541242,
+          -0.41475477701124996
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_970",
+        "name": "VIIRS flare 970",
+        "flare_id": 970,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.78264954110372,
+          -0.021635434842130544
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_972",
+        "name": "VIIRS flare 972",
+        "flare_id": 972,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.85668591430208,
+          -0.3082896977655326
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_973",
+        "name": "VIIRS flare 973",
+        "flare_id": 973,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -75.56751529274368,
+          -0.8439409856634615
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_974",
+        "name": "VIIRS flare 974",
+        "flare_id": 974,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.88604178888566,
+          -0.7931384572774058
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_975",
+        "name": "VIIRS flare 975",
+        "flare_id": 975,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.97371515427845,
+          -0.18587243224372763
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_976",
+        "name": "VIIRS flare 976",
+        "flare_id": 976,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.84637977993029,
+          -0.23937344242676226
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_977",
+        "name": "VIIRS flare 977",
+        "flare_id": 977,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.91419871764477,
+          -0.5917641108478329
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_978",
+        "name": "VIIRS flare 978",
+        "flare_id": 978,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.14732198065782,
+          -0.6859621747028303
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_980",
+        "name": "VIIRS flare 980",
+        "flare_id": 980,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.84751716122531,
+          -0.39353420693886404
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_983",
+        "name": "VIIRS flare 983",
+        "flare_id": 983,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.87972426917136,
+          -0.373339334521799
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_984",
+        "name": "VIIRS flare 984",
+        "flare_id": 984,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.80705082698985,
+          -0.3268320732039604
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_985",
+        "name": "VIIRS flare 985",
+        "flare_id": 985,
+        "type": "upstream",
+        "category": "oil",
+        "facility_type": "N/A",
+        "facility_name": "PETROECUADOR - SHUSHUFINDI"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.6604705444599,
+          -0.27549913302012136
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_987",
+        "name": "VIIRS flare 987",
+        "flare_id": 987,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.81314238712308,
+          -0.38767574785483927
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_988",
+        "name": "VIIRS flare 988",
+        "flare_id": 988,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.7699301069125,
+          -0.5594488458386492
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_990",
+        "name": "VIIRS flare 990",
+        "flare_id": 990,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.99929505732858,
+          -0.2652901277935543
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_991",
+        "name": "VIIRS flare 991",
+        "flare_id": 991,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.82520489045935,
+          -0.18797339632190702
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_994",
+        "name": "VIIRS flare 994",
+        "flare_id": 994,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.88054385769426,
+          -0.7342593347024555
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_995",
+        "name": "VIIRS flare 995",
+        "flare_id": 995,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.7698221623503,
+          -0.7399256129666973
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_997",
+        "name": "VIIRS flare 997",
+        "flare_id": 997,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.9003754622729,
+          -0.37061506248940695
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_998",
+        "name": "VIIRS flare 998",
+        "flare_id": 998,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.67520530948227,
+          -0.3456287711228404
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_999",
+        "name": "VIIRS flare 999",
+        "flare_id": 999,
+        "type": "upstream",
+        "category": "oil",
+        "facility_type": "N/A",
+        "facility_name": "PETROECUADOR - SHUSHUFINDI"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.65570352247165,
+          -0.24568653425859305
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1000",
+        "name": "VIIRS flare 1000",
+        "flare_id": 1000,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.92194997710952,
+          -0.9468800632402453
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1001",
+        "name": "VIIRS flare 1001",
+        "flare_id": 1001,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.65162673840327,
+          -0.05847469542109489
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1002",
+        "name": "VIIRS flare 1002",
+        "flare_id": 1002,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.85386799782967,
+          -0.342978046479308
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1003",
+        "name": "VIIRS flare 1003",
+        "flare_id": 1003,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.83182127010778,
+          -0.2574942425564104
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1004",
+        "name": "VIIRS flare 1004",
+        "flare_id": 1004,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.90033389555107,
+          -0.4686790855979955
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1006",
+        "name": "VIIRS flare 1006",
+        "flare_id": 1006,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.12541586509192,
+          -0.5283354886019738
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1008",
+        "name": "VIIRS flare 1008",
+        "flare_id": 1008,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.95235686612337,
+          -0.3355165850746788
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1009",
+        "name": "VIIRS flare 1009",
+        "flare_id": 1009,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.84488656502047,
+          -0.2838822931495795
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1010",
+        "name": "VIIRS flare 1010",
+        "flare_id": 1010,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.67665971858378,
+          -0.7059039447369935
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1012",
+        "name": "VIIRS flare 1012",
+        "flare_id": 1012,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.76452551264877,
+          -0.7510230875375553
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1013",
+        "name": "VIIRS flare 1013",
+        "flare_id": 1013,
+        "type": "upstream",
+        "category": "oil",
+        "facility_type": "N/A",
+        "facility_name": "PETROECUADOR - SHUSHUFINDI"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.64997522579895,
+          -0.15222588815908866
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1014",
+        "name": "VIIRS flare 1014",
+        "flare_id": 1014,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.87183280593258,
+          -0.4812723757054381
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1015",
+        "name": "VIIRS flare 1015",
+        "flare_id": 1015,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.14980854850246,
+          -0.7165975225654865
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1017",
+        "name": "VIIRS flare 1017",
+        "flare_id": 1017,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.87408153027381,
+          -0.3538358805372592
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1019",
+        "name": "VIIRS flare 1019",
+        "flare_id": 1019,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.89354839846511,
+          -0.43916732559335525
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1020",
+        "name": "VIIRS flare 1020",
+        "flare_id": 1020,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.84553318625063,
+          -0.2686688231733694
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1021",
+        "name": "VIIRS flare 1021",
+        "flare_id": 1021,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.40712235343842,
+          -1.0071478219701544
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1024",
+        "name": "VIIRS flare 1024",
+        "flare_id": 1024,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.00334395283676,
+          -0.2812887435358389
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1025",
+        "name": "VIIRS flare 1025",
+        "flare_id": 1025,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.89054535039097,
+          -0.4916211735688273
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1026",
+        "name": "VIIRS flare 1026",
+        "flare_id": 1026,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.84649847130325,
+          -0.9275308639845108
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1029",
+        "name": "VIIRS flare 1029",
+        "flare_id": 1029,
+        "type": "volcano"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -78.3321875333099,
+          -2.0108837899473424
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1030",
+        "name": "VIIRS flare 1030",
+        "flare_id": 1030,
+        "type": "downstream",
+        "category": "lng"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -79.87830048503365,
+          -3.1140412860653424
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1031",
+        "name": "VIIRS flare 1031",
+        "flare_id": 1031,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.12767064927971,
+          -0.6795888670128231
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1033",
+        "name": "VIIRS flare 1033",
+        "flare_id": 1033,
+        "type": "volcano"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.65936070480036,
+          -0.07971607937893675
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1035",
+        "name": "VIIRS flare 1035",
+        "flare_id": 1035,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.84387347500497,
+          -0.4325181605709355
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1038",
+        "name": "VIIRS flare 1038",
+        "flare_id": 1038,
+        "type": "unknown",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.90050687374796,
+          -0.8592952430809095
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1039",
+        "name": "VIIRS flare 1039",
+        "flare_id": 1039,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.534595231305,
+          -0.009978439523219852
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1040",
+        "name": "VIIRS flare 1040",
+        "flare_id": 1040,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.3713708467567,
+          -0.14296105673391038
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1831",
+        "name": "VIIRS flare 1831",
+        "flare_id": 1831,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.87810772756411,
+          0.07691452515797369
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1832",
+        "name": "VIIRS flare 1832",
+        "flare_id": 1832,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.77502854661707,
+          0.0004965461532868994
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1836",
+        "name": "VIIRS flare 1836",
+        "flare_id": 1836,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.29458992900193,
+          0.10633474377973176
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1837",
+        "name": "VIIRS flare 1837",
+        "flare_id": 1837,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.87009508827263,
+          0.10982503156078392
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1839",
+        "name": "VIIRS flare 1839",
+        "flare_id": 1839,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.33193144983576,
+          0.14036607627361136
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1840",
+        "name": "VIIRS flare 1840",
+        "flare_id": 1840,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.48827421854752,
+          0.14868025150639244
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1841",
+        "name": "VIIRS flare 1841",
+        "flare_id": 1841,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.28175386376655,
+          0.15774562149460636
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1843",
+        "name": "VIIRS flare 1843",
+        "flare_id": 1843,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.55778586450323,
+          0.0251074422930077
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1844",
+        "name": "VIIRS flare 1844",
+        "flare_id": 1844,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.29804500144945,
+          0.30086089771532415
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1845",
+        "name": "VIIRS flare 1845",
+        "flare_id": 1845,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.71605348765803,
+          0.08162152864126151
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1851",
+        "name": "VIIRS flare 1851",
+        "flare_id": 1851,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.70881035515144,
+          0.17247066193003674
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1854",
+        "name": "VIIRS flare 1854",
+        "flare_id": 1854,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.29189301680833,
+          0.39203774521100215
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1857",
+        "name": "VIIRS flare 1857",
+        "flare_id": 1857,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.58023573768281,
+          0.06269662183954382
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1861",
+        "name": "VIIRS flare 1861",
+        "flare_id": 1861,
+        "type": "downstream",
+        "category": "refinery",
+        "facility_type": "N/A",
+        "facility_name": "PETROECUADOR - ESMERALDAS"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -79.68870002465117,
+          0.9348821615853778
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1863",
+        "name": "VIIRS flare 1863",
+        "flare_id": 1863,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.27872797903605,
+          0.02322847782048464
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1864",
+        "name": "VIIRS flare 1864",
+        "flare_id": 1864,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.65878864880511,
+          0.06069998594706033
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1867",
+        "name": "VIIRS flare 1867",
+        "flare_id": 1867,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.71067830283147,
+          0.05701079509898384
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1869",
+        "name": "VIIRS flare 1869",
+        "flare_id": 1869,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.56133956220661,
+          0.06146289988518068
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1871",
+        "name": "VIIRS flare 1871",
+        "flare_id": 1871,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -76.59080813058772,
+          0.012648548372140316
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "flare_1875",
+        "name": "VIIRS flare 1875",
+        "flare_id": 1875,
+        "type": "upstream",
+        "category": "oil"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -77.31489917963309,
+          0.18614100894556407
+        ]
+      }
+    }
+  ]
+}

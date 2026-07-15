@@ -63,12 +63,14 @@ a tile):
   one deterministic-key file *per tile* (not per scene). Each tile file is
   `SELECT DISTINCT` over every AOI's CSVs for that tile (cross-AOI/cross-shard union +
   dedup), `ORDER BY date` so row-group date stats prune within a file.
-- **`clouds/`** — the cloud mask: `clouds/data.parquet`, one row per (~100 m cell,
-  date) = `glon,glat,date,cloud_frac`, emitted *during* detection over every scene
-  (incl. flareless/cloudy — the clear-but-unlit looks that are the honest persistence
-  denominator). AOI-agnostic; overlapping scans of a cell on a date dedup. An internal
-  build artifact: the cluster step joins each anchor's cell against it for `n_clear_obs`
-  (no second SCL pass), and the scan footprint derives from it. **Not web-published.**
+- **`clouds/`** — the cloud mask: an immutable per-run parquet collection under
+  `clouds/runs/` (plus the legacy `clouds/data.parquet`), with rows
+  `glon,glat,date,cloud_frac`, emitted *during* detection over every scene (incl.
+  flareless/cloudy — the clear-but-unlit looks that are the honest persistence
+  denominator). The run key hashes its scene paths, so retrying the same archive is an
+  idempotent PUT. This avoids a global `DISTINCT` rewrite that required tens of GB of
+  scratch; the cluster join already set-deduplicates dates per cell across objects.
+  AOI-agnostic and internal: **not web-published.**
 - **`clusters/`** — the derived view: `s2-flares cluster` over the fresh `detections/`,
   with the persistence denominator joined from `clouds/` → `clusters/mgrs=…/data.parquet`,
   one file per tile (each cluster carries its anchor's tile; one row/cluster + nested

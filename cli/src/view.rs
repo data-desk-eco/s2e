@@ -7,7 +7,7 @@
 //! duckdb owns the parquet+s3 i/o (the stated analytics/archive layer); rust core
 //! owns the clustering. the seam is a flat csv handoff — no native parquet deps.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 use s2_flares_core::{Cluster, Detection};
 
 fn tmp(name: &str) -> std::path::PathBuf {
@@ -98,27 +98,27 @@ pub fn read_archive(archive: &str, bbox: Option<[f64; 4]>, start: &str, end: &st
 }
 
 /// read the cloud mask (clouds/ glob/parquet: glon,glat,date,cloud_frac) over a date
-/// window, STREAMING each row to `sink` — duckdb owns the parquet/s3 read; the snap +
-/// anchor join is pure rust in main::clouds_rescore. streamed (not returned as a Vec)
-/// because the mask is multi-GB: the caller keeps only the ~anchor cells it queries, so
-/// peak memory is O(anchors), not O(mask) — the whole-mask materialise OOM'd the box.
+/// window, STREAMING DuckDB's CSV stdout directly to `sink` — no multi-GB temporary
+/// CSV. DuckDB owns the parquet/S3 scan; the snap + anchor join is pure Rust. The
+/// caller keeps only queried anchor cells, so memory is O(anchors), not O(mask).
 pub fn read_clouds(glob: &str, start: &str, end: &str, mut sink: impl FnMut(f64, f64, &str, f64)) -> Result<(), String> {
-    let out = tmp("clouds.csv");
-    let out_s = out.to_string_lossy();
     let sql = format!(
-        "{prelude}COPY (SELECT glon, glat, date, cloud_frac FROM read_parquet('{glob}', union_by_name=true) \
-         WHERE date >= '{start}' AND date <= '{end}') TO '{out_s}' (FORMAT CSV, HEADER)",
+        "{prelude}SELECT glon, glat, date, cloud_frac FROM read_parquet('{glob}', union_by_name=true) \
+         WHERE date >= '{start}' AND date <= '{end}'",
         prelude = s3_prelude());
-    duckdb(&sql)?;
+    let mut child = Command::new("duckdb")
+        .args(["-csv", "-noheader", "-c", &sql])
+        .stdout(Stdio::piped())
+        .spawn().map_err(|e| format!("duckdb spawn: {e}"))?;
     use std::io::BufRead;
-    let file = std::fs::File::open(&out).map_err(|e| format!("read clouds: {e}"))?;
-    for line in std::io::BufReader::new(file).lines().skip(1).map_while(Result::ok) {
+    let stdout = child.stdout.take().ok_or_else(|| "duckdb stdout unavailable".to_string())?;
+    for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
         let f: Vec<&str> = line.split(',').collect();
         if f.len() < 4 { continue; }
         sink(f[0].parse().unwrap_or(0.0), f[1].parse().unwrap_or(0.0), f[2], f[3].parse().unwrap_or(1.0));
     }
-    let _ = std::fs::remove_file(&out);
-    Ok(())
+    let status = child.wait().map_err(|e| format!("duckdb wait: {e}"))?;
+    if status.success() { Ok(()) } else { Err("duckdb exited non-zero".into()) }
 }
 
 /// distinct mgrs tiles in the archive + each tile's detection bounding box — the

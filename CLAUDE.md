@@ -208,10 +208,12 @@ co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2` direc
   (`s3://$BUCKET/detections/mgrs=…/data.parquet`), one deterministic-key parquet per
   MGRS tile (idempotent PUT; a `SELECT DISTINCT … ORDER BY date` union of that tile's
   scene CSVs), queryable in one `read_parquet('s3://…/**/*.parquet',
-  hive_partitioning=true)`. `clouds/`: the cloud mask (`clouds/data.parquet`, `SELECT
-  DISTINCT glon,glat,date,cloud_frac` over the `.cld` files) — AOI-agnostic, an INTERNAL
-  build artifact (not web-published), kept in S3 to re-join at another date window
-  without re-reading SCL. `clusters/`: the derived view (`clusters/data.parquet`),
+  hive_partitioning=true)`. `clouds/`: the cloud mask, an immutable deterministic
+  per-run collection under `clouds/runs/` (plus legacy `clouds/data.parquet`) —
+  AOI-agnostic, INTERNAL, and not web-published. Per-run objects avoid a global
+  DISTINCT rewrite/scratch disk; the cluster join set-deduplicates clear dates per cell
+  across objects. Kept in S3 to re-join another date window without re-reading SCL.
+  `clusters/`: the derived view (`clusters/data.parquet`),
   produced by running `s2-flares cluster --clouds` over the fresh `detections/`
   full-window — the persistence denominator is a **spatial join** of each anchor's cell
   against `clouds/` (no second SCL pass). DuckDB (rollup) and the cli (cluster) both run

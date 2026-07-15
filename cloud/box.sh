@@ -258,7 +258,7 @@ archive(){
         S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
         S2_S3_ACCESS_KEY='$ak' S2_S3_SECRET_KEY='$sk' \
         ./target/release/s2-flares cluster --concurrency ${COVERAGE_CONCURRENCY:-16} \
-          --archive 's3://$BUCKET/detections/**/*.parquet' --clouds 's3://$BUCKET/clouds/data.parquet' \
+          --archive 's3://$BUCKET/detections/**/*.parquet' --clouds 's3://$BUCKET/clouds/**/*.parquet' \
           --out 's3://$BUCKET/clusters' --start '${START:-2015-01-01}' --end '${END:-2100-01-01}'"
   coverage || true   # refresh the scanned-extent overlay from the live shards (best-effort)
 }
@@ -302,10 +302,11 @@ PY
   "${s3[@]}" cp --acl public-read "$tmp/new.json" "s3://$BUCKET/coverage.geojson"
 }
 
-# runs on the head: merge each affected tile and the cloud mask into their existing
-# archive objects, then read back a tally. Stage locally before replacing an S3 source
-# key (never read and overwrite one object in the same COPY). This is what makes
-# archive genuinely incremental when separate runs touch the same tile.
+# runs on the head: merge each affected detection tile into its existing archive
+# object, then append one deterministic cloud-mask object for this run. Detection
+# objects are small enough to stage locally before replacing their S3 source key.
+# Clouds are deliberately an immutable collection: a global DISTINCT merge needed
+# >30 GB external-sort scratch, while downstream already set-dedups clear dates.
 ARCHIVER=$(cat <<'EOS'
 set -euo pipefail
 DDB=~/.duckdb/cli/latest/duckdb
@@ -314,7 +315,7 @@ SET s3_endpoint='s3.$REGION.cloudferro.com'; SET s3_region='$REGION';
 SET s3_url_style='path'; SET s3_use_ssl=true;
 SET s3_access_key_id='$AK'; SET s3_secret_access_key='$SK';"
 # Authenticated listing (clouds/ is intentionally private, so an HTTP HEAD is 403).
-existing=$("$DDB" -csv -noheader -c "$S3 SELECT file FROM glob('s3://$BUCKET/detections/**/data.parquet'); SELECT file FROM glob('s3://$BUCKET/clouds/data.parquet');")
+existing=$("$DDB" -csv -noheader -c "$S3 SELECT file FROM glob('s3://$BUCKET/detections/**/data.parquet');")
 exists(){ grep -Fxq "s3://$BUCKET/$1" <<<"$existing"; }
 # tiles with ≥1 detection (skip header-only scenes); <mgrs>_<date>.csv → mgrs.
 tiles=$(for f in "$OUT"/*/*.csv; do [ "$(wc -l <"$f")" -gt 1 ] && b=$(basename "$f" .csv) && echo "${b%_*}" || :; done | sort -u)
@@ -327,15 +328,12 @@ for m in $tiles; do
   "$DDB" -c "$S3 COPY (SELECT DISTINCT * FROM ($src) ORDER BY date) TO '$tmp' (FORMAT parquet); COPY (SELECT * FROM read_parquet('$tmp')) TO 's3://$BUCKET/detections/mgrs=$m/data.parquet' (FORMAT parquet);"
   rm -f "$tmp"
 done
-# clouds/ is cumulative too: replacing it with the latest run alone would erase prior
-# clear-sky coverage and corrupt persistence in the regenerated global cluster view.
-tmp=/tmp/clouds-merged.parquet; rm -f "$tmp"
-local="SELECT glon,glat,date,cloud_frac FROM read_csv('$OUT/*/*.cld', union_by_name=true)"
-if exists "clouds/data.parquet"; then
-  src="SELECT * FROM ($local UNION BY NAME SELECT glon,glat,date,cloud_frac FROM read_parquet('s3://$BUCKET/clouds/data.parquet'))"
-else src="$local"; fi
-"$DDB" -c "$S3 COPY (SELECT DISTINCT * FROM ($src) ORDER BY date) TO '$tmp' (FORMAT parquet); COPY (SELECT * FROM read_parquet('$tmp')) TO 's3://$BUCKET/clouds/data.parquet' (FORMAT parquet);"
-rm -f "$tmp"
+# clouds/ grows as immutable run objects. Hashing the sorted scene keys makes a retry
+# idempotently overwrite the same object; no old object is read and no global sort or
+# local staging is required. Exact duplicate cells across runs are harmless because
+# clouds_rescore stores distinct dates per cell.
+cloud_key=$(find "$OUT" -name '*.cld' -type f -printf '%P\n' | sort | sha256sum | cut -c1-20)
+"$DDB" -c "$S3 COPY (SELECT glon,glat,date,cloud_frac FROM read_csv('$OUT/*/*.cld', union_by_name=true)) TO 's3://$BUCKET/clouds/runs/$cloud_key.parquet' (FORMAT parquet);"
 "$DDB" -c "$S3 SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/detections/**/data.parquet', hive_partitioning=true);"
 EOS
 )

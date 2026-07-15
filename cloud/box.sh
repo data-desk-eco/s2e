@@ -317,8 +317,18 @@ SET s3_access_key_id='$AK'; SET s3_secret_access_key='$SK';"
 # Authenticated listing (clouds/ is intentionally private, so an HTTP HEAD is 403).
 existing=$("$DDB" -csv -noheader -c "$S3 SELECT file FROM glob('s3://$BUCKET/detections/**/data.parquet');")
 exists(){ grep -Fxq "s3://$BUCKET/$1" <<<"$existing"; }
-# tiles with ≥1 detection (skip header-only scenes); <mgrs>_<date>.csv → mgrs.
-tiles=$(for f in "$OUT"/*/*.csv; do [ "$(wc -l <"$f")" -gt 1 ] && b=$(basename "$f" .csv) && echo "${b%_*}" || :; done | sort -u)
+# Tiles with ≥1 detection (skip header-only scenes); inspect only the second line.
+# `wc -l` read every multi-MB CSV in full and made this inventory take >25 minutes.
+tiles=$(python3 - "$OUT" <<'PY'
+import glob,os,sys
+seen=set()
+for f in glob.iglob(os.path.join(sys.argv[1],'*','*.csv')):
+    with open(f,'rb') as h:
+        h.readline()
+        if h.readline(): seen.add(os.path.basename(f).rsplit('_',1)[0])
+print('\n'.join(sorted(seen)))
+PY
+)
 for m in $tiles; do
   tmp="/tmp/detections-$m.parquet"; rm -f "$tmp"
   local="SELECT * EXCLUDE(mgrs) FROM read_csv('$OUT/*/${m}_*.csv', union_by_name=true)"

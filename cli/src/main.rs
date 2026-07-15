@@ -396,14 +396,17 @@ fn clouds_rescore(glob: &str, start: &str, end: &str, clusters: &mut [Cluster]) 
     // that cell-key set (≤ 9·clusters) and keep ONLY those while streaming the mask — peak
     // memory is O(anchors), not O(mask). materialising the whole multi-GB mask OOM'd the box.
     let mut needed: HashSet<String> = HashSet::new();
+    let mut cells: HashSet<(i64, i64)> = HashSet::new();
     for cl in clusters.iter() {
         for dj in -1..=1 { for di in -1..=1 {
-            needed.insert(s2_flares_core::cell_key(cl.lon + di as f64 * step, cl.lat + dj as f64 * step));
+            let (lon, lat) = (cl.lon + di as f64 * step, cl.lat + dj as f64 * step);
+            needed.insert(s2_flares_core::cell_key(lon, lat));
+            cells.insert(((lon / step).round() as i64, (lat / step).round() as i64));
         }}
     }
     // cell key → the distinct dates that cell was observed CLEAR (relevant cells only).
     let mut clear: HashMap<String, HashSet<String>> = HashMap::new();
-    view::read_clouds(glob, start, end, |glon, glat, date, cf| {
+    view::read_clouds(glob, start, end, &cells, |glon, glat, date, cf| {
         if cf <= s2_flares_core::CLEAR_MAX {
             let k = s2_flares_core::cell_key(glon, glat);
             if needed.contains(&k) { clear.entry(k).or_default().insert(date.to_string()); }

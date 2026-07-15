@@ -98,12 +98,24 @@ pub fn read_archive(archive: &str, bbox: Option<[f64; 4]>, start: &str, end: &st
 }
 
 /// read the cloud mask (clouds/ glob/parquet: glon,glat,date,cloud_frac) over a date
-/// window, STREAMING DuckDB's CSV stdout directly to `sink` — no multi-GB temporary
-/// CSV. DuckDB owns the parquet/S3 scan; the snap + anchor join is pure Rust. The
-/// caller keeps only queried anchor cells, so memory is O(anchors), not O(mask).
-pub fn read_clouds(glob: &str, start: &str, end: &str, mut sink: impl FnMut(f64, f64, &str, f64)) -> Result<(), String> {
+/// window, restricted to `cells` (grid indices round(lon/GRID_STEP), round(lat/GRID_STEP)):
+/// the semi-join runs INSIDE duckdb (tiny csv build side, mask side streams), so the
+/// result — which the duckdb cli materialises in full before printing — is
+/// O(anchor cells × dates), not O(mask). the unfiltered mask (~25 GB materialised)
+/// OOM-killed a 7 GB box even with 16 GB of swap.
+pub fn read_clouds(glob: &str, start: &str, end: &str, cells: &std::collections::HashSet<(i64, i64)>,
+                   mut sink: impl FnMut(f64, f64, &str, f64)) -> Result<(), String> {
+    let cf = tmp("cells.csv");
+    let cf_s = cf.to_string_lossy();
+    let body: String = std::iter::once("i,j".to_string())
+        .chain(cells.iter().map(|(i, j)| format!("{i},{j}"))).collect::<Vec<_>>().join("\n");
+    std::fs::write(&cf, body).map_err(|e| format!("write cells: {e}"))?;
+    let inv = (1.0 / s2_flares_core::GRID_STEP).round();
     let sql = format!(
-        "{prelude}SELECT glon, glat, date, cloud_frac FROM read_parquet('{glob}', union_by_name=true) \
+        "{prelude}SELECT DISTINCT glon, glat, date, cloud_frac \
+         FROM read_parquet('{glob}', union_by_name=true) \
+         JOIN read_csv('{cf_s}', header=true, columns={{'i':'BIGINT','j':'BIGINT'}}) \
+           ON CAST(round(glon*{inv}) AS BIGINT)=i AND CAST(round(glat*{inv}) AS BIGINT)=j \
          WHERE date >= '{start}' AND date <= '{end}'",
         prelude = s3_prelude());
     let mut child = Command::new("duckdb")
@@ -118,6 +130,7 @@ pub fn read_clouds(glob: &str, start: &str, end: &str, mut sink: impl FnMut(f64,
         sink(f[0].parse().unwrap_or(0.0), f[1].parse().unwrap_or(0.0), f[2], f[3].parse().unwrap_or(1.0));
     }
     let status = child.wait().map_err(|e| format!("duckdb wait: {e}"))?;
+    let _ = std::fs::remove_file(&cf);
     if status.success() { Ok(()) } else { Err("duckdb exited non-zero".into()) }
 }
 

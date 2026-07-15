@@ -302,8 +302,10 @@ PY
   "${s3[@]}" cp --acl public-read "$tmp/new.json" "s3://$BUCKET/coverage.geojson"
 }
 
-# runs on the head: one COPY per tile (union of all that tile's non-empty scene CSVs)
-# to its deterministic S3 key, then a read-back tally. heredoc'd so box.sh stays one file.
+# runs on the head: merge each affected tile and the cloud mask into their existing
+# archive objects, then read back a tally. Stage locally before replacing an S3 source
+# key (never read and overwrite one object in the same COPY). This is what makes
+# archive genuinely incremental when separate runs touch the same tile.
 ARCHIVER=$(cat <<'EOS'
 set -euo pipefail
 DDB=~/.duckdb/cli/latest/duckdb
@@ -311,16 +313,29 @@ S3="INSTALL httpfs; LOAD httpfs;
 SET s3_endpoint='s3.$REGION.cloudferro.com'; SET s3_region='$REGION';
 SET s3_url_style='path'; SET s3_use_ssl=true;
 SET s3_access_key_id='$AK'; SET s3_secret_access_key='$SK';"
+# Authenticated listing (clouds/ is intentionally private, so an HTTP HEAD is 403).
+existing=$("$DDB" -csv -noheader -c "$S3 SELECT file FROM glob('s3://$BUCKET/detections/**/data.parquet'); SELECT file FROM glob('s3://$BUCKET/clouds/data.parquet');")
+exists(){ grep -Fxq "s3://$BUCKET/$1" <<<"$existing"; }
 # tiles with ≥1 detection (skip header-only scenes); <mgrs>_<date>.csv → mgrs.
 tiles=$(for f in "$OUT"/*/*.csv; do [ "$(wc -l <"$f")" -gt 1 ] && b=$(basename "$f" .csv) && echo "${b%_*}" || :; done | sort -u)
-{ echo "$S3"
-  for m in $tiles; do
-    echo "COPY (SELECT DISTINCT * EXCLUDE(mgrs) FROM read_csv('$OUT/*/${m}_*.csv', union_by_name=true) ORDER BY date) TO 's3://$BUCKET/detections/mgrs=$m/data.parquet' (FORMAT parquet);"
-  done
-  # clouds/ the cloud mask — one row per (~100 m cell, date), the persistence denominator
-  # joined into clusters/ at build time. internal artifact; browser never reads it. (README)
-  echo "COPY (SELECT DISTINCT glon,glat,date,cloud_frac FROM read_csv('$OUT/*/*.cld', union_by_name=true) ORDER BY date) TO 's3://$BUCKET/clouds/data.parquet' (FORMAT parquet);"
-} | "$DDB"
+for m in $tiles; do
+  tmp="/tmp/detections-$m.parquet"; rm -f "$tmp"
+  local="SELECT * EXCLUDE(mgrs) FROM read_csv('$OUT/*/${m}_*.csv', union_by_name=true)"
+  if exists "detections/mgrs=$m/data.parquet"; then
+    src="SELECT * FROM ($local UNION BY NAME SELECT * FROM read_parquet('s3://$BUCKET/detections/mgrs=$m/data.parquet', hive_partitioning=false))"
+  else src="$local"; fi
+  "$DDB" -c "$S3 COPY (SELECT DISTINCT * FROM ($src) ORDER BY date) TO '$tmp' (FORMAT parquet); COPY (SELECT * FROM read_parquet('$tmp')) TO 's3://$BUCKET/detections/mgrs=$m/data.parquet' (FORMAT parquet);"
+  rm -f "$tmp"
+done
+# clouds/ is cumulative too: replacing it with the latest run alone would erase prior
+# clear-sky coverage and corrupt persistence in the regenerated global cluster view.
+tmp=/tmp/clouds-merged.parquet; rm -f "$tmp"
+local="SELECT glon,glat,date,cloud_frac FROM read_csv('$OUT/*/*.cld', union_by_name=true)"
+if exists "clouds/data.parquet"; then
+  src="SELECT * FROM ($local UNION BY NAME SELECT glon,glat,date,cloud_frac FROM read_parquet('s3://$BUCKET/clouds/data.parquet'))"
+else src="$local"; fi
+"$DDB" -c "$S3 COPY (SELECT DISTINCT * FROM ($src) ORDER BY date) TO '$tmp' (FORMAT parquet); COPY (SELECT * FROM read_parquet('$tmp')) TO 's3://$BUCKET/clouds/data.parquet' (FORMAT parquet);"
+rm -f "$tmp"
 "$DDB" -c "$S3 SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/detections/**/data.parquet', hive_partitioning=true);"
 EOS
 )

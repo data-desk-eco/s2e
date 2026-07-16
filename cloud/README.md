@@ -17,7 +17,7 @@ bbox/no-aoi run can't be split, so it forces a single box.
 | `verify` | prove every AOI feature was scanned + 0 errored scenes (per member) |
 | `publish` | make the archive a web-map backend: anonymous public-read + CORS so DuckDB-wasm can range-read it |
 | `coverage [aoi.geojson]` | (re)build `s3://$BUCKET/coverage.geojson` from the live shards, or from a local AOI file — the scanned-extent overlay |
-| `wipe` | empty the archive bucket (confirms; `FORCE=1` skips) |
+| `wipe` | empty s2's own prefixes in the store bucket (confirms; `FORCE=1` skips) |
 | `cost` | estimate run cost so far (FLEET × uptime × flavor €/h) |
 | `down` | scale to zero (delete every VM + floating IP) |
 | `launch <detect args>` | `up` → `run`, detached — kick off the fleet and walk away (boxes stay up; finish later with `archive`/`publish`/`down`) |
@@ -25,6 +25,16 @@ bbox/no-aoi run can't be split, so it forces a single box.
 | `ssh [i]` / `ip` / `watch` | interactive login to member `i` / floating IPs / re-attach to the run stream |
 
 `FLEET=N` (default 4) sizes a bulk run; `GPU=1` selects the GPU box line.
+
+## The shared store (`store.sh`)
+
+The archive lands in the central datadesk bucket
+(`s3://datadesk-archive` on WAW3-2, defined once in `cloud/store.sh` with a
+`store_creds` helper the sibling repos source too). Every repo owns one prefix:
+s2-flares `detections/` + `clusters/` + `clouds/` (private) + `coverage.geojson`,
+burnoff `vnf/data.parquet`, firedamp `plumes/data.parquet`, ch4id
+`features/data.fgb`. Bucket-level config (public-read policy + CORS) is applied
+only by `box.sh publish`; the other repos just PUT their objects.
 
 ## Auth
 

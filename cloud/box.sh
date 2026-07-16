@@ -26,7 +26,8 @@ fi
 : "${REPO_DIR:=s2-flares}"      # repo path on the box
 : "${OUT:=out}"                 # box-side output dir (s2-flares detect writes <OUT>/<id>/<mgrs>_<date>.csv)
 : "${LOCAL_DATA:=../data/cf}"   # where `pull` lands the CSVs
-: "${BUCKET:=s2-flares-archive}"  # CloudFerro object-storage container for `archive`
+. ./store.sh                    # the shared datadesk store (bucket/region/creds)
+: "${BUCKET:=$STORE_BUCKET}"    # CloudFerro object-storage container for `archive`
 : "${RATE:=0.066}"              # eo1.large pay-per-use €/h (WAW3-2); override per flavor
 
 SSHOPTS="-o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
@@ -348,29 +349,34 @@ cloud_key=$(find "$OUT" -name '*.cld' -type f -printf '%P\n' | sort | sha256sum 
 EOS
 )
 
-# web-map backend: anonymous public-read on detections/* + clusters/* + vnf/* +
-# coverage.geojson + CORS, so a browser (DuckDB-wasm) can range-read directly. clouds/
-# stays private (internal build artifact). one-time per bucket; needs aws-cli. (README)
+# web-map backend: anonymous public-read on every published prefix of the shared
+# datadesk store (see store.sh — s2's detections/clusters/coverage plus burnoff's
+# vnf/, firedamp's plumes/ and ch4id's features/) + CORS, so a browser can
+# range-read directly. clouds/ stays private (internal build artifact). this is the
+# ONE place bucket-level config lives — the sibling repos only PUT their objects.
+# one-time per bucket; needs aws-cli. (README)
 publish(){
   auth
   command -v aws >/dev/null || { echo "publish needs aws-cli (brew install awscli)" >&2; exit 1; }
   local ak sk; read -r ak sk < <(s3creds)
   local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api)
-  say "Publishing s3://$BUCKET/{detections,clusters,vnf,coverage.geojson} for web-map access (public-read + CORS)"
+  say "Publishing s3://$BUCKET/{detections,clusters,vnf,plumes,features,coverage.geojson} for web-map access (public-read + CORS)"
   "${aws_s3[@]}" put-bucket-cors --bucket "$BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*","arn:aws:s3:::'"$BUCKET"'/coverage.geojson"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
+  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*","arn:aws:s3:::'"$BUCKET"'/plumes/*","arn:aws:s3:::'"$BUCKET"'/features/*","arn:aws:s3:::'"$BUCKET"'/coverage.geojson"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
   echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters,coverage.geojson}…"
 }
 
-# empty the archive bucket (the bucket stays). IRREVERSIBLE — confirm by typing the
-# bucket name back (FORCE=1 skips, for scripts).
+# empty s2's OWN prefixes (detections/clusters/clouds/coverage) — the bucket and the
+# sibling repos' data (vnf/plumes/features) stay. IRREVERSIBLE — confirm by typing
+# the bucket name back (FORCE=1 skips, for scripts).
 wipe(){
   auth
   command -v aws >/dev/null || { echo "wipe needs aws-cli (brew install awscli)" >&2; exit 1; }
   local ak sk; read -r ak sk < <(s3creds)
   local rm=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
-    aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3 rm "s3://$BUCKET/" --recursive)
+    aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3 rm "s3://$BUCKET/" --recursive
+    --exclude '*' --include 'detections/*' --include 'clusters/*' --include 'clouds/*' --include coverage.geojson)
   if [ "${FORCE:-}" != 1 ]; then
     local n; n=$("${rm[@]}" --dryrun | wc -l | tr -d ' ')
     [ "$n" = 0 ] && { say "s3://$BUCKET already empty"; return 0; }

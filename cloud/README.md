@@ -17,7 +17,6 @@ bbox/no-aoi run can't be split, so it forces a single box.
 | `verify` | prove every AOI feature was scanned + 0 errored scenes (per member) |
 | `publish` | make the archive a web-map backend: anonymous public-read + CORS so DuckDB-wasm can range-read it |
 | `coverage [aoi.geojson]` | (re)build `s3://$BUCKET/coverage.geojson` from the live shards, or from a local AOI file — the scanned-extent overlay |
-| `wipe` | empty s2's own prefixes in the store bucket (confirms; `FORCE=1` skips) |
 | `cost` | estimate run cost so far (FLEET × uptime × flavor €/h) |
 | `down` | scale to zero (delete every VM + floating IP) |
 | `launch <detect args>` | `up` → `run`, detached — kick off the fleet and walk away (boxes stay up; finish later with `archive`/`publish`/`down`) |

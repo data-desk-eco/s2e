@@ -361,31 +361,10 @@ publish(){
   local ak sk; read -r ak sk < <(s3creds)
   local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api)
-  say "Publishing s3://$BUCKET/{detections,clusters,vnf,plumes,features,coverage.geojson} for web-map access (public-read + CORS)"
+  say "Publishing s3://$BUCKET/{detections,clusters,vnf,plumes,features,mars-s2l,coverage.geojson} for web-map access (public-read + CORS)"
   "${aws_s3[@]}" put-bucket-cors --bucket "$BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*","arn:aws:s3:::'"$BUCKET"'/plumes/*","arn:aws:s3:::'"$BUCKET"'/features/*","arn:aws:s3:::'"$BUCKET"'/coverage.geojson"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
+  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*","arn:aws:s3:::'"$BUCKET"'/plumes/*","arn:aws:s3:::'"$BUCKET"'/features/*","arn:aws:s3:::'"$BUCKET"'/mars-s2l/*","arn:aws:s3:::'"$BUCKET"'/coverage.geojson"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
   echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters,coverage.geojson}…"
-}
-
-# empty s2's OWN prefixes (detections/clusters/clouds/coverage) — the bucket and the
-# sibling repos' data (vnf/plumes/features) stay. IRREVERSIBLE — confirm by typing
-# the bucket name back (FORCE=1 skips, for scripts).
-wipe(){
-  auth
-  command -v aws >/dev/null || { echo "wipe needs aws-cli (brew install awscli)" >&2; exit 1; }
-  local ak sk; read -r ak sk < <(s3creds)
-  local rm=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
-    aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3 rm "s3://$BUCKET/" --recursive
-    --exclude '*' --include 'detections/*' --include 'clusters/*' --include 'clouds/*' --include coverage.geojson)
-  if [ "${FORCE:-}" != 1 ]; then
-    local n; n=$("${rm[@]}" --dryrun | wc -l | tr -d ' ')
-    [ "$n" = 0 ] && { say "s3://$BUCKET already empty"; return 0; }
-    printf '\033[1;31m⚠ wipe %s objects from s3://%s — irreversible.\033[0m type the bucket name to confirm: ' "$n" "$BUCKET"
-    local a; read -r a; [ "$a" = "$BUCKET" ] || { echo "  aborted"; return 1; }
-  fi
-  say "Wiping s3://$BUCKET"
-  "${rm[@]}"
-  echo "  bucket emptied."
 }
 
 # instant local cost estimate: FLEET × uptime × RATE (billing portal is daily, too
@@ -458,7 +437,7 @@ all(){ up; run "$@"
 
 case "${1:-}" in
   up) up;; image) image;; ip) ip;; ssh) shift; go_ssh "${1:-0}";; cost) cost;; down) down;;
-  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; wipe) wipe;; parity) parity;;
+  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; parity) parity;;
   coverage) shift; coverage "${1:-}";; launch) shift; launch "$@";; all) shift; all "$@";;
-  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | pull | archive | coverage [aoi] | verify | publish | wipe | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
+  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | pull | archive | coverage [aoi] | verify | publish | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
 esac

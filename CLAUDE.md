@@ -37,7 +37,11 @@ cli/                native gdal-backed binary — reproduces the old cli.js + cf
                       nested-array parquet; rust clusters; csv handoff between them
   src/main.rs         arg parse, aoi loading, rayon fan-out, `detect` / `cluster`
 wasm/               wasm-bindgen shim: detectBlock / cluster / scoreCluster → js
-cloud/              EU-sovereign bulk pipeline (box.sh + cloud-init.yaml)
+cloud/              EU-sovereign bulk pipeline: emissions.sh (the central data desk
+                    multi-detector system: targeting from the ch4id features
+                    catalogue, flares/mars/hypergas dispatch, archive merges, ch4id
+                    attribution, cron) over box.sh (fleet primitives; sourceable)
+                    + detectors/*.sh (one file per detector) + cloud-init.yaml
 aoi/                site catalogues that drive runs (raw source + a DuckDB .sql that
                     fits it to the standard AOI geojson schema; see aoi/README.md)
 ```
@@ -174,6 +178,18 @@ clustering implementation to drift.
 
 The same `core`, off US infrastructure: bulk detection on a CloudFerro WAW3-2 box
 co-located with the Copernicus `eodata` archive, reading Sentinel-2 `.jp2` directly.
+
+- **`cloud/emissions.sh`** is the central data desk bulk emissions system layered on
+  box.sh (sourced — box.sh returns before its `case` when sourced): `aoi` (targeting
+  from the ch4id features catalogue on the store, by k=v filters or any provider's
+  feature ids), `run -d flares,mars,hypergas` (one detached resumable runner per box,
+  detectors sequential within it; mars/hypergas payloads rsynced from `$MARS_DIR`/
+  `$HYPERGAS_DIR` and sharded by `--shard/--nshards` over a sites csv derived from
+  the aoi), `archive` (gather → head → per-detector merge scripts into the live store
+  objects), `attribute` (ch4id `bin/box` on the head), `cron` (standing daily
+  incremental run: daily.sh + persisted creds + crontab on the head). Detector
+  specifics live in `detectors/<name>.sh` (`_repo/_prep/_cmd/_merge/_pull/_count`);
+  everything else falls through to box.sh. See cloud/README.md.
 
 - **`cloud/box.sh`** is the whole pipeline, one script: `image` (bake the golden disk
   image once, optional) → `up` (provision) →

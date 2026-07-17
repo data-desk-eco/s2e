@@ -363,7 +363,7 @@ publish(){
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api)
   say "Publishing s3://$BUCKET/{detections,clusters,vnf,plumes,features,mars-s2l,coverage.geojson} for web-map access (public-read + CORS)"
   "${aws_s3[@]}" put-bucket-cors --bucket "$BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*","arn:aws:s3:::'"$BUCKET"'/plumes/*","arn:aws:s3:::'"$BUCKET"'/features/*","arn:aws:s3:::'"$BUCKET"'/mars-s2l/*","arn:aws:s3:::'"$BUCKET"'/coverage.geojson"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
+  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*","arn:aws:s3:::'"$BUCKET"'/plumes/*","arn:aws:s3:::'"$BUCKET"'/features/*","arn:aws:s3:::'"$BUCKET"'/mars-s2l/*","arn:aws:s3:::'"$BUCKET"'/hypergas/*","arn:aws:s3:::'"$BUCKET"'/ch4id/*","arn:aws:s3:::'"$BUCKET"'/coverage.geojson"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
   echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters,coverage.geojson}…"
 }
 
@@ -434,6 +434,10 @@ launch(){ up; run "$@"; }
 all(){ up; run "$@"
   if verify; then archive; pull; down
   else say "verify found unscanned AOI features — fleet kept up. re-run (resumable), then ./box.sh archive && ./box.sh down"; fi; }
+
+# sourceable: emissions.sh reuses the primitives above (auth, up, mssh, shard_aoi,
+# archive, …) without re-dispatching.
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 case "${1:-}" in
   up) up;; image) image;; ip) ip;; ssh) shift; go_ssh "${1:-0}";; cost) cost;; down) down;;

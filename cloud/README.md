@@ -1,3 +1,40 @@
+# `emissions.sh` — the central bulk emissions detection system
+
+One fleet, three detectors, one store. `emissions.sh` sources `box.sh` (the fleet
+primitives below) and dispatches any subset of the Data Desk detectors over one
+targeting AOI:
+
+- **`flares`** — s2-flares SWIR flaring (this repo's native CLI, already on every box)
+- **`mars`** — MARS-S2L Sentinel-2 methane ML (`~/Research/mars-s2l`, rsynced payload)
+- **`hypergas`** — EMIT hyperspectral methane (`~/Tools/hypergas`, rsynced payload;
+  needs an Earthdata `~/.netrc`)
+
+plus **ch4id attribution** of the methane detections, run on the head box.
+
+```bash
+# targeting: the ch4id features catalogue on the store → aoi geojson.
+# filters (kind/status/dataset/…) or ANY provider's feature ids (GEM:/OGIM:/OSM:/MPS:)
+./emissions.sh aoi 'kind=lng_terminal,status=operating,dataset=gem' > lng.geojson
+./emissions.sh aoi 'GEM:G100002054200,OGIM:123730' > two.geojson
+
+./emissions.sh run -d mars,flares --aoi lng.geojson --start 2026-06-01 --end 2026-07-17
+./emissions.sh status                       # per-box, per-detector progress
+./emissions.sh archive                      # gather → head → merge into the live store
+./emissions.sh attribute 20                 # ch4id over unattributed datadesk plumes
+./emissions.sh down
+
+# standing daily incremental run on the head box (detect → merge → attribute):
+./emissions.sh cron 'kind=lng_terminal,status=operating,dataset=gem'
+```
+
+Everything is detached and resumable (presence == done at the per-scene level), so a
+`run` can be left for days and re-issued idempotently; `archive` merges into the live
+store objects (`detections/mgrs=…`, `mars-s2l/results.parquet`,
+`hypergas/results.parquet`), so results accrue sequentially run after run. Detector
+specifics live one-per-file in `detectors/<name>.sh` (`_prep`/`_cmd`/`_merge`/
+`_pull`/`_count`); adding a detector is one new file. Unknown subcommands fall
+through to `box.sh` (`up`, `down`, `cost`, `ssh`, `publish`, …).
+
 # `box.sh` — CloudFerro fleet orchestration
 
 One script, one auth path, run end-to-end on CloudFerro WAW3-2 boxes co-located with
@@ -32,8 +69,9 @@ The archive lands in the central datadesk bucket
 `store_creds` helper the sibling repos source too). Every repo owns one prefix:
 s2-flares `detections/` + `clusters/` + `clouds/` (private) + `coverage.geojson`,
 burnoff `vnf/data.parquet`, firedamp `plumes/data.parquet`, ch4id
-`features/data.fgb`. Bucket-level config (public-read policy + CORS) is applied
-only by `box.sh publish`; the other repos just PUT their objects.
+`features/data.fgb` + `ch4id/` (durable plumes/attributions state), mars-s2l
+`mars-s2l/`, hypergas `hypergas/`. Bucket-level config (public-read policy + CORS)
+is applied only by `box.sh publish`; the other repos just PUT their objects.
 
 ## Auth
 

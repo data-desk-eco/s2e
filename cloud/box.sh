@@ -284,12 +284,12 @@ archive(){
   mssh 0 "cd $REPO_DIR && $s2env ./target/release/s2e archive \
           --input '$REPO_DIR/$OUT' --destination 's3://$BUCKET'"
   mssh 0 "cd $REPO_DIR && $s2env ./target/release/s2e views --root 's3://$BUCKET'"
-  say "Cluster view (+ clear-sky persistence, joined against clouds/) → s3://$BUCKET/clusters/mgrs=…/"
+  say "Cluster view (+ clear-sky persistence, joined against clouds/) → s3://$BUCKET/views/clusters/mgrs=…/"
   # persistence folds in via the cloud mask (anchor's ~100 m cell ⋈ clouds/) — pure
   # duckdb, no 2nd SCL pass. persistence window == detection window (START/END drive both).
   mssh 0 "cd $REPO_DIR && $s2env ./target/release/s2e cluster --concurrency ${COVERAGE_CONCURRENCY:-16} \
-          --archive 's3://$BUCKET/detections/**/*.parquet' --clouds 's3://$BUCKET/clouds/**/*.parquet' \
-          --out 's3://$BUCKET/clusters' --start '${START:-2015-01-01}' --end '${END:-2100-01-01}'"
+          --archive 's3://$BUCKET/views/detections/**/*.parquet' --clouds 's3://$BUCKET/ops/clouds/**/*.parquet' \
+          --out 's3://$BUCKET/views/clusters' --start '${START:-2015-01-01}' --end '${END:-2100-01-01}'"
   coverage || true   # refresh the scanned-extent overlay from the live shards (best-effort)
 }
 
@@ -309,7 +309,7 @@ coverage(){
   else local n i; n=$(fleetn); for i in $(seq 0 $((n-1))); do mssh "$i" "cat $REPO_DIR/_aoi.geojson 2>/dev/null" > "$tmp/aoi-$i.json" || true; done; fi
   local s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3)
-  "${s3[@]}" cp "s3://$BUCKET/coverage.geojson" "$tmp/cur.json" 2>/dev/null || echo '{"type":"FeatureCollection","features":[]}' > "$tmp/cur.json"
+  "${s3[@]}" cp "s3://$BUCKET/web/coverage.geojson" "$tmp/cur.json" 2>/dev/null || echo '{"type":"FeatureCollection","features":[]}' > "$tmp/cur.json"
   START="${START:-2015-01-01}" END="${END:-2100-01-01}" python3 - "$tmp" <<'PY' || { say "coverage: no AOI features (bbox run?) — skipped"; return 0; }
 import json,os,glob,sys,datetime
 tmp=sys.argv[1]
@@ -329,7 +329,7 @@ if not n: sys.exit(1)
 json.dump({'type':'FeatureCollection','features':list(feats.values())}, open(f'{tmp}/new.json','w'))
 print(f'  coverage.geojson: {n} scanned features merged → {len(feats)} total')
 PY
-  "${s3[@]}" cp --acl public-read "$tmp/new.json" "s3://$BUCKET/coverage.geojson"
+  "${s3[@]}" cp --acl public-read "$tmp/new.json" "s3://$BUCKET/web/coverage.geojson"
 }
 
 # instant local cost estimate: FLEET × uptime × RATE (billing portal is daily, too

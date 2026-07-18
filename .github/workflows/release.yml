@@ -20,5 +20,5 @@ jobs:
           AWS_REQUEST_CHECKSUM_CALCULATION: when_required
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: |
-          aws --endpoint-url https://s3.WAW3-2.cloudferro.com s3 cp target/release/s2e "s3://datadesk-archive/bin/s2e-$GITHUB_REF_NAME" --no-progress
-          aws --endpoint-url https://s3.WAW3-2.cloudferro.com s3 cp target/release/s2e s3://datadesk-archive/bin/s2e --no-progress
+          aws --endpoint-url https://s3.WAW3-2.cloudferro.com s3 cp target/release/s2e "s3://datadesk-archive/ops/bin/s2e-$GITHUB_REF_NAME" --no-progress
+          aws --endpoint-url https://s3.WAW3-2.cloudferro.com s3 cp target/release/s2e s3://datadesk-archive/ops/bin/s2e --no-progress

@@ -190,7 +190,7 @@ pub fn derive_views(root: &str) -> Result<(), String> {
         ))?;
         for tile in tiles {
             let tile = tile.trim_matches('"');
-            let output = join(root, &format!("detections/mgrs={tile}/data.parquet"));
+            let output = join(root, &format!("views/detections/mgrs={tile}/data.parquet"));
             local_parent(&output)?;
             view::duckdb(&format!(
                 "{prelude}COPY (SELECT * EXCLUDE(mgrs) FROM ({flares}) WHERE mgrs='{}' ORDER BY date,scene,lon,lat) \
@@ -201,7 +201,7 @@ pub fn derive_views(root: &str) -> Result<(), String> {
     }
 
     let cloud_glob = quote(&join(root, "observations/**/clouds-*.geojson"));
-    let cloud_output = join(root, "clouds/data.parquet");
+    let cloud_output = join(root, "ops/clouds/data.parquet");
     if has(&join(root, "observations/**/clouds-*.geojson"))? {
         local_parent(&cloud_output)?;
         view::duckdb(&format!(
@@ -218,7 +218,7 @@ pub fn derive_views(root: &str) -> Result<(), String> {
     }
 
     let plume_glob = quote(&join(root, "observations/**/plumes-*.geojson"));
-    let plume_output = join(root, "retrievals/data.parquet");
+    let plume_output = join(root, "views/retrievals/data.parquet");
     let validity = plume_validity();
     if has(&join(root, "observations/**/plumes-*.geojson"))? {
         local_parent(&plume_output)?;

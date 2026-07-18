@@ -228,6 +228,7 @@ pub fn derive_views(root: &str) -> Result<(), String> {
                json_extract(feature,'$.properties.flux_rate_kg_h')::DOUBLE AS flux_rate_kg_h, \
                json_extract(feature,'$.properties.flux_rate_std_kg_h')::DOUBLE AS flux_rate_std_kg_h, \
                json_extract(feature,'$.geometry')::VARCHAR AS geometry, \
+               json_extract(analysis,'$.area.processed')::VARCHAR AS footprint, \
                json_extract_string(analysis,'$.assets.probability') AS probability_asset, \
                json_extract_string(analysis,'$.assets.preview') AS preview_asset \
              FROM records LEFT JOIN LATERAL unnest(features) u(feature) ON true) \

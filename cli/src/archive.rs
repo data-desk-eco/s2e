@@ -207,10 +207,18 @@ pub fn derive_views(root: &str) -> Result<(), String> {
             "{prelude}COPY (WITH records AS (SELECT * FROM read_json('{plume_glob}', columns={{'analysis':'JSON','features':'JSON[]'}})) \
              SELECT json_extract_string(analysis,'$.target.id') AS target_id, \
                json_extract_string(analysis,'$.target.name') AS target_name, \
-               COALESCE(TRY_CAST(json_extract(analysis,'$.target.geometry.coordinates[0]') AS DOUBLE), \
+               COALESCE(CASE json_extract_string(feature,'$.geometry.type') \
+                 WHEN 'Point' THEN TRY_CAST(json_extract(feature,'$.geometry.coordinates[0]') AS DOUBLE) \
+                 WHEN 'Polygon' THEN (json_extract(feature,'$.geometry.coordinates[0][0][0]')::DOUBLE + \
+                   json_extract(feature,'$.geometry.coordinates[0][2][0]')::DOUBLE) / 2 END, \
+                 TRY_CAST(json_extract(analysis,'$.target.geometry.coordinates[0]') AS DOUBLE), \
                  (json_extract(analysis,'$.area.requested.coordinates[0][0][0]')::DOUBLE + \
                   json_extract(analysis,'$.area.requested.coordinates[0][2][0]')::DOUBLE) / 2) AS lon, \
-               COALESCE(TRY_CAST(json_extract(analysis,'$.target.geometry.coordinates[1]') AS DOUBLE), \
+               COALESCE(CASE json_extract_string(feature,'$.geometry.type') \
+                 WHEN 'Point' THEN TRY_CAST(json_extract(feature,'$.geometry.coordinates[1]') AS DOUBLE) \
+                 WHEN 'Polygon' THEN (json_extract(feature,'$.geometry.coordinates[0][0][1]')::DOUBLE + \
+                   json_extract(feature,'$.geometry.coordinates[0][2][1]')::DOUBLE) / 2 END, \
+                 TRY_CAST(json_extract(analysis,'$.target.geometry.coordinates[1]') AS DOUBLE), \
                  (json_extract(analysis,'$.area.requested.coordinates[0][0][1]')::DOUBLE + \
                   json_extract(analysis,'$.area.requested.coordinates[0][2][1]')::DOUBLE) / 2) AS lat, \
                json_extract_string(analysis,'$.scene.id') AS scene, \

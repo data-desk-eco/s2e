@@ -1,12 +1,12 @@
 [package]
-name = "s2-flares-core"
+name = "s2e-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Pure Sentinel-2 flare, plume, retrieval and clustering methodology"
 
 [lib]
-name = "s2_flares_core"
+name = "s2e_core"
 path = "src/lib.rs"
 
 # pure compute, no i/o. serde is optional (off by default → core stays dependency-

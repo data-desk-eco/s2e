@@ -1,4 +1,4 @@
-# s2-flares
+# s2e
 
 The canonical Rust reference implementation for Sentinel-2 flare and methane-
 plume detection. Shared L1C ingestion, native CloudSEN/MARS-S2L inference, flare
@@ -64,9 +64,9 @@ when computed together, so partial runs never mutate another detector's result.
 Retrying the same method replaces the same deterministic path; a method change
 creates a new record.
 
-GeoJSON records and assets are authoritative. `archive --views` creates disposable
-Parquet indexes (`detections/`, `clouds/`, `plumes/`); `cluster` creates another
-derived view. They may always be deleted and rebuilt from `observations/`.
+GeoJSON records and assets are authoritative. `views` creates disposable Parquet
+indexes (`detections/`, `clouds/`, `plumes/`); `cluster` creates another derived
+view. They may always be deleted and rebuilt from `observations/`.
 
 ## Methodology invariants
 
@@ -101,16 +101,17 @@ match. Errors remain retryable `.err` files and successful commits remove them.
 Positive probability rasters are committed before their referencing GeoJSON.
 
 CloudFerro's `box.sh` only provisions, syncs, builds, shards, launches, gathers and
-tears down. The Rust `archive` command publishes canonical records and builds views;
-the Rust `cluster` command builds the cluster snapshot. No detector-specific shell
-plugins or alternate orchestration paths are allowed.
+tears down. The Rust `archive` command publishes canonical records, `views` rebuilds
+the disposable Parquet indexes, and `cluster` builds the cluster snapshot; the `etl`
+repo owns their scheduled cadence. No detector-specific shell plugins or alternate
+orchestration paths are allowed.
 
 ## Checks
 
 ```bash
 cargo fmt --all -- --check
-cargo test -p s2-flares-core -p s2-flares-cli -p s2-flares-wasm --no-default-features
-bash -n cloud/box.sh cloud/emissions.sh
+cargo test -p s2e-core -p s2e-cli -p s2e-wasm --no-default-features
+bash -n cloud/box.sh
 ```
 
 Network/model/GPU parity tests are ignored by default and require their documented

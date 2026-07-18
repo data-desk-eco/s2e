@@ -1,4 +1,4 @@
-# s2-flares rust workspace. one pure methodology core (`core/`) compiling both to
+# s2e rust workspace. one pure methodology core (`core/`) compiling both to
 # a native gdal-backed cli (`cli/`) and to wasm for browser/lambda (`wasm/`).
 # the frozen methodology lives once in core; the split is i/o only — exactly the
 # detect.js-takes-typed-arrays / io-in-cog.js seam the js lineage already had.
@@ -7,7 +7,7 @@
 [workspace]
 members = ["core", "cli", "wasm", "gpu"]
 # gpu's build.rs needs nvcc; keep it out of bare `cargo build`/`test` at the root so
-# non-CUDA hosts (dev/CI) stay green. it builds only via `-p s2-flares-gpu` or when
+# non-CUDA hosts (dev/CI) stay green. it builds only via `-p s2e-gpu` or when
 # `cli --features gpu` pulls it in.
 default-members = ["core", "cli", "wasm"]
 resolver = "2"

@@ -3,7 +3,7 @@
 
 use super::{models, plume, read, record, stac, Aoi, Common, DetectorMode};
 use rayon::prelude::*;
-use s2_flares_core::{Detection, Thresholds};
+use s2e_core::{Detection, Thresholds};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 fn method(name: &str, parameters: Value) -> Value {
     let mut value = json!({
         "name": name,
-        "implementation": format!("s2-flares/{}", env!("CARGO_PKG_VERSION")),
+        "implementation": format!("s2e/{}", env!("CARGO_PKG_VERSION")),
         "parameters": parameters
     });
     value["fingerprint"] = record::fingerprint(&value).into();
@@ -33,10 +33,7 @@ fn cloudsen_method() -> Value {
 }
 
 fn scl_method() -> Value {
-    method(
-        "sentinel-2-scl",
-        json!({"clear_max": s2_flares_core::CLEAR_MAX}),
-    )
+    method("sentinel-2-scl", json!({"clear_max": s2e_core::CLEAR_MAX}))
 }
 
 fn plume_method() -> Value {
@@ -44,8 +41,8 @@ fn plume_method() -> Value {
         "mars-s2l-20250326",
         json!({
             "model_sha256": models::MARS_SHA256,
-            "threshold": s2_flares_core::plume::DEFAULT_THRESHOLD,
-            "min_pixels": s2_flares_core::plume::DEFAULT_MIN_PIXELS
+            "threshold": s2e_core::plume::DEFAULT_THRESHOLD,
+            "min_pixels": s2e_core::plume::DEFAULT_MIN_PIXELS
         }),
     )
 }
@@ -138,9 +135,9 @@ fn flare_features(detections: &[Detection]) -> Vec<Value> {
 /// scene-level glint terms on the flare analysis (formerly duplicated per feature).
 fn flare_glint(analysis: &mut Value, item: &stac::Item) {
     if let Some(elevation) = item.sun_elevation {
-        let angle = s2_flares_core::score::glint_angle_nadir(elevation);
+        let angle = s2e_core::score::glint_angle_nadir(elevation);
         analysis["glint_angle"] = json!(angle);
-        analysis["glint_score"] = json!(s2_flares_core::score::glint_score_from_angle(angle));
+        analysis["glint_score"] = json!(s2e_core::score::glint_score_from_angle(angle));
     }
 }
 

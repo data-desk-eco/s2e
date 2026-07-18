@@ -1,4 +1,4 @@
-# s2-flares
+# s2e
 
 A native Rust reference implementation for detecting gas flares and methane
 plumes in Sentinel-2 imagery. Both modes share L1C scene search, CloudSEN masking,
@@ -26,23 +26,24 @@ explicit flare-comparison profiles.
 ## CLI
 
 ```bash
-cargo build --release -p s2-flares-cli
-target/release/s2-flares models
+cargo build --release -p s2e-cli
+target/release/s2e models
 
 # Both signals, sharing one chip and CloudSEN pass.
-target/release/s2-flares detect \
+target/release/s2e detect \
   --aoi aoi/uk-gas-import-terminals.geojson \
   --start 2026-01-01 --end 2026-07-17 --out out/uk
 
 # Independent modes remain independently resumable.
-target/release/s2-flares detect --mode plumes --bbox 53.79,39.35,53.81,39.37
-target/release/s2-flares detect --mode flares --region 51.4,25.8,51.7,26.1
+target/release/s2e detect --mode plumes --bbox 53.79,39.35,53.81,39.37
+target/release/s2e detect --mode flares --region 51.4,25.8,51.7,26.1
 
-# Publish the canonical records unchanged and rebuild disposable Parquet views.
-target/release/s2-flares archive --input out/uk --destination s3://bucket --views
+# Publish the canonical records unchanged, then rebuild disposable Parquet views.
+target/release/s2e archive --input out/uk --destination s3://bucket
+target/release/s2e views --root s3://bucket
 
 # Derive a flare-site view for another date window.
-target/release/s2-flares cluster \
+target/release/s2e cluster \
   --archive 's3://bucket/detections/**/*.parquet' --out clusters.parquet
 ```
 
@@ -78,8 +79,8 @@ methodology gets a new deterministic filename; retrying the same methodology
 idempotently commits the same path. Combined runs share computation in memory but
 retain this clean persistence boundary.
 
-`archive` copies GeoJSON and raster assets unchanged. With `--views`, DuckDB
-rebuilds `detections/`, `clouds/` and `plumes/results.parquet` as disposable query
+`archive` copies GeoJSON and raster assets unchanged. `views` uses DuckDB to
+rebuild `detections/`, `clouds/` and `plumes/results.parquet` as disposable query
 indexes. `clusters/` is likewise derived; none of the Parquet products is another
 authoritative detection format.
 
@@ -93,7 +94,7 @@ authoritative detection format.
   45 for L2A while both resolve the same 16 persistent sites.
 
 ```bash
-cargo test -p s2-flares-core -p s2-flares-cli -p s2-flares-wasm --no-default-features
+cargo test -p s2e-core -p s2e-cli -p s2e-wasm --no-default-features
 ```
 
 ## CloudFerro

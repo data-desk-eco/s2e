@@ -25,7 +25,7 @@ pub fn similarity(target: &Chip, background: &Chip) -> f32 {
     };
     let target_bands = selected(target);
     let background_bands = selected(background);
-    let aligned = match s2_flares_core::plume::align_background(
+    let aligned = match s2e_core::plume::align_background(
         &target_bands,
         &background_bands,
         target.width,

@@ -3,7 +3,7 @@
 //! only the compute crosses. the web map clusters raw detections it pulls off the
 //! archive with the SAME code the cli runs — no second clustering implementation.
 
-use s2_flares_core::{
+use s2e_core::{
     cluster_detections, detect_block, BlockMeta, ClusterOptions, Detection, Thresholds,
 };
 use wasm_bindgen::prelude::*;
@@ -97,7 +97,7 @@ pub fn score_cluster_js(
     n_obs: f64,
     min_glint: Option<f64>,
 ) -> Vec<f64> {
-    let s = s2_flares_core::score_cluster(max_ratio, n_dates, n_obs, min_glint);
+    let s = s2e_core::score_cluster(max_ratio, n_dates, n_obs, min_glint);
     vec![
         s.ratio_score,
         s.persistence_score,

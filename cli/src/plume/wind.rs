@@ -142,8 +142,7 @@ mod tests {
 
     #[test]
     fn cache_is_bounded_without_evicting_the_active_file() {
-        let root =
-            std::env::temp_dir().join(format!("s2-flares-wind-cache-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("s2e-wind-cache-{}", std::process::id()));
         let wind = root.join("wind");
         fs::create_dir_all(&wind).unwrap();
         let current = wind.join("a.nc4");

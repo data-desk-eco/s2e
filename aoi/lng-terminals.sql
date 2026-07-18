@@ -1,5 +1,5 @@
 -- fit the global energy monitor LNG terminals (GGIT, 2025-09 release) to the
--- s2-flares AOI schema: a FeatureCollection of one padded-envelope polygon per
+-- s2e AOI schema: a FeatureCollection of one padded-envelope polygon per
 -- EXPORT terminal, tagged with id/name (+ status, capacity).
 --
 -- dedup: GEM lists each liquefaction train/unit as its own feature, but all units

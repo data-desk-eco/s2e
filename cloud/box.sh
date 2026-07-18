@@ -25,7 +25,7 @@ fi
 : "${NET:=s2-flares-net}"
 : "${EXTNET:=external}"
 : "${EODATANET:=eodata}"
-: "${REPO_DIR:=s2-flares}"      # repo path on the box
+: "${REPO_DIR:=s2e}"      # repo path on the box
 : "${OUT:=out}"                 # box-side output dir (one durable record per acquisition)
 : "${LOCAL_DATA:=../data/cf}"   # where `pull` lands the CSVs
 DD=${DATA_DESK:-$HOME/Tools/data-desk}
@@ -181,7 +181,7 @@ run(){
 # yet-up: mssh fails → retry). cold box ~5-8min; golden boot near-instant. capped ~20min.
 wait_ready(){
   local i=$1 w=0
-  until mssh "$i" 'test -f "$HOME/.cargo/env" && test -x '"$REPO_DIR"'/target/release/s2-flares' 2>/dev/null; do
+  until mssh "$i" 'test -f "$HOME/.cargo/env" && test -x '"$REPO_DIR"'/target/release/s2e' 2>/dev/null; do
     w=$((w+1)); [ "$w" -gt 120 ] && return 1; sleep 10
   done
 }
@@ -198,9 +198,9 @@ start_member(){
     scp -q $SSHOPTS -i "$KEYFILE" "/tmp/_shard-$i.geojson" "eouser@$ip:$REPO_DIR/_aoi.geojson"
     aoiarg="--aoi _aoi.geojson"; fi
   say "  [$i] build (incremental)$feat"
-  mssh "$i" "cd $REPO_DIR && . \$HOME/.cargo/env && ${cudaenv}cargo build --release -q -p s2-flares-cli$feat"
+  mssh "$i" "cd $REPO_DIR && . \$HOME/.cargo/env && ${cudaenv}cargo build --release -q -p s2e-cli$feat"
   # stop any running detect first (re-run is idempotent/resumable — no racing detects).
-  mssh "$i" "pkill -x s2-flares 2>/dev/null; sleep 1; cd $REPO_DIR && setsid -f bash -lc '. /etc/profile.d/eodata.sh && exec ./target/release/s2-flares detect --source cdse-l1c $aoiarg ${rest[*]} --out $OUT' >/tmp/cfrun.log 2>&1 </dev/null; sleep 1; echo '  [$i] detect started'"
+  mssh "$i" "pkill -x s2e 2>/dev/null; sleep 1; cd $REPO_DIR && setsid -f bash -lc '. /etc/profile.d/eodata.sh && exec ./target/release/s2e detect --source cdse-l1c $aoiarg ${rest[*]} --out $OUT' >/tmp/cfrun.log 2>&1 </dev/null; sleep 1; echo '  [$i] detect started'"
 }
 # round-robin split → /tmp/_shard-<i>.geojson (balanced slices; keeps the cli generic).
 shard_aoi(){ python3 - "$1" "$2" <<'PY'
@@ -220,7 +220,7 @@ watch(){
   while :; do
     local fin=0
     for i in $(seq 0 $((n-1))); do
-      local out; out=$(mssh "$i" "l=/tmp/cfrun.log; t=\$(wc -l <\$l 2>/dev/null||echo 0); sed -n \"$((seen[i]+1)),\${t}p\" \$l 2>/dev/null; printf '\036%s %s' \$t \"\$(grep -q '^done:' \$l 2>/dev/null && echo D || { pgrep -x s2-flares >/dev/null 2>&1 || echo X; })\"" 2>/dev/null) || { fin=$((fin+1)); continue; }
+      local out; out=$(mssh "$i" "l=/tmp/cfrun.log; t=\$(wc -l <\$l 2>/dev/null||echo 0); sed -n \"$((seen[i]+1)),\${t}p\" \$l 2>/dev/null; printf '\036%s %s' \$t \"\$(grep -q '^done:' \$l 2>/dev/null && echo D || { pgrep -x s2e >/dev/null 2>&1 || echo X; })\"" 2>/dev/null) || { fin=$((fin+1)); continue; }
       local body=${out%$'\036'*} t st; read -r t st <<<"${out##*$'\036'}"
       [[ "$t" =~ ^[0-9]+$ ]] || t=${seen[i]}
       [ -n "$body" ] && printf '%s\n' "$body" | sed "s/^/[$i] /"
@@ -239,9 +239,9 @@ status(){
     echo "── box $i ──"
     mssh "$i" 'pgrep -af "[s]2-flares detect" | sed "s/^/  running: /"
       tail -3 /tmp/cfrun.log 2>/dev/null | sed "s/^/  /"
-      printf "  analysis records: "; find s2-flares/out/observations -name "*.geojson" 2>/dev/null | wc -l
-      printf "  retryable errors: "; find s2-flares/out/observations -name "*.err" 2>/dev/null | wc -l
-      printf "  plume assets: "; find s2-flares/out/assets -name "plumes-*.tif" 2>/dev/null | wc -l' || true
+      printf "  analysis records: "; find s2e/out/observations -name "*.geojson" 2>/dev/null | wc -l
+      printf "  retryable errors: "; find s2e/out/observations -name "*.err" 2>/dev/null | wc -l
+      printf "  plume assets: "; find s2e/out/assets -name "plumes-*.tif" 2>/dev/null | wc -l' || true
   done
 }
 
@@ -252,7 +252,7 @@ parity(){
   say "Parity gpu-vs-cpu on head"
   sshx "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && . /etc/profile.d/cuda.sh && . /etc/profile.d/eodata.sh && \
     S2_PARITY_BBOX='$PARITY_BBOX' ${PARITY_TILE:+S2_PARITY_TILE='$PARITY_TILE'} ${START:+S2_PARITY_START='$START'} ${END:+S2_PARITY_END='$END'} \
-    cargo test --release -p s2-flares-cli --features gpu parity -- --ignored --nocapture"
+    cargo test --release -p s2e-cli --features gpu parity -- --ignored --nocapture"
 }
 
 pull(){
@@ -278,19 +278,16 @@ archive(){
     say "Gather $(mvm "$i") outputs → head"
     mssh "$i" "cd $REPO_DIR/$OUT 2>/dev/null && tar cf - . || true" | mssh 0 "mkdir -p $REPO_DIR/$OUT && tar xf - -C $REPO_DIR/$OUT"
   done
-  say "Publish $OUT → s3://$BUCKET/{observations,assets} + derived views"
-  mssh 0 "cd $REPO_DIR && \
-        S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
-        S2_S3_ACCESS_KEY='$ak' S2_S3_SECRET_KEY='$sk' \
-        ./target/release/s2-flares archive --input '$REPO_DIR/$OUT' \
-          --destination 's3://$BUCKET' --views"
+  say "Publish $OUT → s3://$BUCKET/{observations,assets}, then rebuild views"
+  local s2env="S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
+        S2_S3_ACCESS_KEY='$ak' S2_S3_SECRET_KEY='$sk'"
+  mssh 0 "cd $REPO_DIR && $s2env ./target/release/s2e archive \
+          --input '$REPO_DIR/$OUT' --destination 's3://$BUCKET'"
+  mssh 0 "cd $REPO_DIR && $s2env ./target/release/s2e views --root 's3://$BUCKET'"
   say "Cluster view (+ clear-sky persistence, joined against clouds/) → s3://$BUCKET/clusters/mgrs=…/"
   # persistence folds in via the cloud mask (anchor's ~100 m cell ⋈ clouds/) — pure
   # duckdb, no 2nd SCL pass. persistence window == detection window (START/END drive both).
-  mssh 0 "cd $REPO_DIR && \
-        S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
-        S2_S3_ACCESS_KEY='$ak' S2_S3_SECRET_KEY='$sk' \
-        ./target/release/s2-flares cluster --concurrency ${COVERAGE_CONCURRENCY:-16} \
+  mssh 0 "cd $REPO_DIR && $s2env ./target/release/s2e cluster --concurrency ${COVERAGE_CONCURRENCY:-16} \
           --archive 's3://$BUCKET/detections/**/*.parquet' --clouds 's3://$BUCKET/clouds/**/*.parquet' \
           --out 's3://$BUCKET/clusters' --start '${START:-2015-01-01}' --end '${END:-2100-01-01}'"
   coverage || true   # refresh the scanned-extent overlay from the live shards (best-effort)
@@ -382,7 +379,7 @@ verify(){
   local n i rc=0; n=$(fleetn)
   for i in $(seq 0 $((n-1))); do
     say "Verify $(mvm "$i")"
-    if mssh "$i" 'pgrep -x s2-flares >/dev/null'; then
+    if mssh "$i" 'pgrep -x s2e >/dev/null'; then
       echo "  detector still running"; rc=1; continue
     fi
     if ! mssh "$i" "grep -q '^done:' /tmp/cfrun.log"; then
@@ -427,14 +424,30 @@ all(){ up; run "$@"; watch
   if verify; then archive; pull; down
   else say "verify found unscanned AOI features — fleet kept up. re-run (resumable), then ./box.sh archive && ./box.sh down"; fi; }
 
-# sourceable: emissions.sh reuses the primitives above (auth, up, mssh, shard_aoi,
-# archive, …) without re-dispatching.
+# shared infrastructure catalogue → detector AOI FeatureCollection on stdout.
+# QUERY is comma-separated k=v filters or a comma-separated set of feature ids:
+#   ./box.sh aoi 'kind=lng_terminal,status=operating'   ./box.sh aoi 'GEM:id[,id…]'
+aoi(){
+  local q=${1:?aoi QUERY: 'kind=lng_terminal[,status=operating]' or 'GEM:id[,id…]'} where
+  if [[ $q == *=* ]]; then where="$(sed "s/=/ = '/g; s/,/' AND /g" <<<"$q")'"
+  else where="id IN ('$(sed "s/,/','/g" <<<"$q")')"; fi
+  duckdb -noheader -list -c "
+    WITH f AS (SELECT id, name, kind, lat, lon
+               FROM read_parquet('$STORE_URL/features/data.parquet') WHERE $where
+               QUALIFY row_number() OVER (
+                 PARTITION BY name, round(lat,2), round(lon,2) ORDER BY id) = 1)
+    SELECT to_json({'type':'FeatureCollection','features': list({
+      'type':'Feature',
+      'properties': {'id': replace(id,':','_'), 'fid': id, 'name': name, 'kind': kind},
+      'geometry': {'type':'Point','coordinates':[lon,lat]}})}) FROM f;"
+}
+
 [ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 case "${1:-}" in
   up) up;; image) image;; ip) ip;; ssh) shift; go_ssh "${1:-0}";; cost) cost;; down) down;;
   run) shift; run "$@";; watch) watch;; status) status;; pull) pull;; archive) archive;; verify) verify;; parity) parity;;
-  coverage) shift; coverage "${1:-}";; launch) shift; launch "$@";; all) shift; all "$@";;
+  coverage) shift; coverage "${1:-}";; launch) shift; launch "$@";; all) shift; all "$@";; aoi) shift; aoi "$@";;
   publish) echo "bucket config moved: \$DATA_DESK/store.sh publish" >&2; exit 1;;
-  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | status | pull | archive | coverage [aoi] | verify | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
+  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | status | pull | archive | coverage [aoi] | aoi QUERY | verify | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
 esac

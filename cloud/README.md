@@ -1,6 +1,6 @@
 # CloudFerro control plane
 
-One fleet runs one Rust binary. `s2-flares detect --mode both` searches each L1C
+One fleet runs one Rust binary. `s2e detect --mode both` searches each L1C
 acquisition once, runs CloudSEN and MARS-S2L natively, and reuses the loaded chip
 for flare detection. There are no detector plugins, Python payloads or Hypergas
 hooks.
@@ -32,11 +32,12 @@ for every sharded AOI and no `.err` files.
 `box.sh archive` gathers worker outputs onto the head and calls:
 
 ```bash
-s2-flares archive --input out --destination s3://$BUCKET --views
+s2e archive --input out --destination s3://$BUCKET
+s2e views --root s3://$BUCKET
 ```
 
-The command publishes `observations/` and `assets/` unchanged, then uses DuckDB to
-rebuild disposable views:
+`archive` publishes `observations/` and `assets/` unchanged; `views` uses DuckDB
+to rebuild the disposable Parquet indexes.
 
 Only GeoJSON analysis records and their referenced assets are authoritative.
 Deleting and rebuilding the Parquet products loses no detector output. The full

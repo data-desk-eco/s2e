@@ -21,8 +21,8 @@ runcmd:
   # rust + clone + build the cli WITH the gpu feature (gdal-sys bindgen needs clang;
   # the gpu crate's build.rs invokes nvcc and links nvjpeg2k + cudart).
   - su - eouser -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
-  - su - eouser -c 'git clone https://github.com/data-desk-eco/s2-flares.git s2-flares && cd s2-flares && . $HOME/.cargo/env && . /etc/profile.d/cuda.sh && cargo build --release -p s2-flares-cli --features gpu'
-  - ln -sf /home/eouser/s2-flares/target/release/s2-flares /usr/local/bin/s2-flares
+  - su - eouser -c 'git clone https://github.com/data-desk-eco/s2e.git s2e && cd s2e && . $HOME/.cargo/env && . /etc/profile.d/cuda.sh && cargo build --release -p s2e-cli --features gpu'
+  - ln -sf /home/eouser/s2e/target/release/s2e /usr/local/bin/s2e
   # WAW3-2 eodata access: per-VM S3 keys + endpoint from the metadata service.
   - |
     curl -s http://169.254.169.254/openstack/latest/vendor_data2.json | python3 -c '

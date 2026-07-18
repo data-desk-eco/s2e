@@ -1612,7 +1612,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
-name = "s2-flares-cli"
+name = "s2e-cli"
 version = "2.0.0"
 dependencies = [
  "candle-core",
@@ -1622,32 +1622,32 @@ dependencies = [
  "gdal",
  "gdal-sys",
  "rayon",
- "s2-flares-core",
- "s2-flares-gpu",
+ "s2e-core",
+ "s2e-gpu",
  "serde_json",
  "sha2",
  "ureq",
 ]
 
 [[package]]
-name = "s2-flares-core"
+name = "s2e-core"
 version = "2.0.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
-name = "s2-flares-gpu"
+name = "s2e-gpu"
 version = "2.0.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
-name = "s2-flares-wasm"
+name = "s2e-wasm"
 version = "2.0.0"
 dependencies = [
- "s2-flares-core",
+ "s2e-core",
  "serde",
  "serde-wasm-bindgen",
  "wasm-bindgen",

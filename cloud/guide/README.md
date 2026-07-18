@@ -11,7 +11,7 @@ reporting dossier, not yet the page itself.
 
 ## The one-paragraph version
 
-Our `s2-flares` bulk pipeline runs on a CloudFerro OpenStack VM in the **WAW3-2** region,
+Our `s2e` bulk pipeline runs on a CloudFerro OpenStack VM in the **WAW3-2** region,
 co-located with the Copernicus `eodata` Sentinel archive. WAW3-2 is not a building — it's
 CloudFerro's third-generation Warsaw cloud region. The **physical building is Netia's
 "Data Center MIND" in Jawczyce**, ~10 km west of Warsaw (Sadowa 5, ~52.2108 °N

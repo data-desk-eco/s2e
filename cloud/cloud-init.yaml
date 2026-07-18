@@ -1,7 +1,7 @@
 #cloud-config
-# box setup: rust toolchain + gdal + duckdb, clone s2-flares, build the native cli.
+# box setup: rust toolchain + gdal + duckdb, clone s2e, build the native cli.
 # the cli reads the in-region eodata S3 (free JP2 reads from inside WAW3-2) via gdal
-# /vsis3 with per-VM creds from the metadata service — `s2-flares detect --source
+# /vsis3 with per-VM creds from the metadata service — `s2e detect --source
 # cdse-l1c …` needs no other secrets. DuckDB and awscli are archive-only; detection
 # is one native Rust binary with no Python environment.
 #
@@ -24,9 +24,9 @@ runcmd:
   # clone + build the native cli. start_member rsyncs the invoking working tree and
   # incrementally rebuilds, so this just needs a tree + binary for the readiness gate;
   # a golden boot already has both → both steps skip.
-  - test -d /home/eouser/s2-flares || su - eouser -c 'git clone https://github.com/data-desk-eco/s2-flares.git s2-flares'
-  - test -x /home/eouser/s2-flares/target/release/s2-flares || su - eouser -c 'cd s2-flares && . $HOME/.cargo/env && cargo build --release -p s2-flares-cli'
-  - ln -sf /home/eouser/s2-flares/target/release/s2-flares /usr/local/bin/s2-flares
+  - test -d /home/eouser/s2e || su - eouser -c 'git clone https://github.com/data-desk-eco/s2e.git s2e'
+  - test -x /home/eouser/s2e/target/release/s2e || su - eouser -c 'cd s2e && . $HOME/.cargo/env && cargo build --release -p s2e-cli'
+  - ln -sf /home/eouser/s2e/target/release/s2e /usr/local/bin/s2e
   # WAW3-2 eodata access: per-VM S3 keys + endpoint, served by the metadata service.
   # ALWAYS runs (creds are per-box). the old anonymous data.cloudferro.com/CLOUDFERRO:
   # PUBLIC pair is a different network — unreachable here and it rejects these keys.

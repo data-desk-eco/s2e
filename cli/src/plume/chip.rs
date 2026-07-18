@@ -35,11 +35,11 @@ impl Chip {
     }
 
     pub fn footprint(&self) -> serde_json::Value {
-        let (zone, north) = s2_flares_core::utm_params(self.epsg);
+        let (zone, north) = s2e_core::utm_params(self.epsg);
         let min_y = self.max_y - self.height as f64 * 10.0;
         let max_x = self.min_x + self.width as f64 * 10.0;
         let p = |x, y| {
-            let (lon, lat) = s2_flares_core::utm_to_wgs84(x, y, zone, north);
+            let (lon, lat) = s2e_core::utm_to_wgs84(x, y, zone, north);
             vec![lon, lat]
         };
         serde_json::json!({
@@ -73,7 +73,7 @@ pub fn component_geometry(chip: &Chip, plume: &PlumeDetection) -> serde_json::Va
     if min_col == usize::MAX {
         return serde_json::Value::Null;
     }
-    let (zone, north) = s2_flares_core::utm_params(chip.epsg);
+    let (zone, north) = s2e_core::utm_params(chip.epsg);
     let (x0, x1) = (
         chip.min_x + min_col as f64 * 10.0,
         chip.min_x + max_col as f64 * 10.0,
@@ -83,7 +83,7 @@ pub fn component_geometry(chip: &Chip, plume: &PlumeDetection) -> serde_json::Va
         chip.max_y - min_row as f64 * 10.0,
     );
     let p = |x, y| {
-        let (lon, lat) = s2_flares_core::utm_to_wgs84(x, y, zone, north);
+        let (lon, lat) = s2e_core::utm_to_wgs84(x, y, zone, north);
         vec![lon, lat]
     };
     serde_json::json!({
@@ -96,14 +96,14 @@ pub fn component_geometry(chip: &Chip, plume: &PlumeDetection) -> serde_json::Va
 /// persistence. This lets the combined L1C pass supply the denominator without
 /// a second SCL/L2A read.
 pub fn cloud_cells(chip: &Chip) -> Vec<(String, f64)> {
-    let (zone, north) = s2_flares_core::utm_params(chip.epsg);
+    let (zone, north) = s2e_core::utm_params(chip.epsg);
     let min_y = chip.max_y - chip.height as f64 * 10.0;
     let max_x = chip.min_x + chip.width as f64 * 10.0;
     let corners = [
-        s2_flares_core::utm_to_wgs84(chip.min_x, min_y, zone, north),
-        s2_flares_core::utm_to_wgs84(chip.min_x, chip.max_y, zone, north),
-        s2_flares_core::utm_to_wgs84(max_x, min_y, zone, north),
-        s2_flares_core::utm_to_wgs84(max_x, chip.max_y, zone, north),
+        s2e_core::utm_to_wgs84(chip.min_x, min_y, zone, north),
+        s2e_core::utm_to_wgs84(chip.min_x, chip.max_y, zone, north),
+        s2e_core::utm_to_wgs84(max_x, min_y, zone, north),
+        s2e_core::utm_to_wgs84(max_x, chip.max_y, zone, north),
     ];
     let bbox = [
         corners.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
@@ -118,10 +118,10 @@ pub fn cloud_cells(chip: &Chip) -> Vec<(String, f64)> {
             .fold(f64::NEG_INFINITY, f64::max),
     ];
     let n = chip.width * chip.height;
-    s2_flares_core::grid_sites(bbox)
+    s2e_core::grid_sites(bbox)
         .into_iter()
         .filter_map(|site| {
-            let (x, y) = s2_flares_core::wgs84_to_utm(site.lon, site.lat, zone, north);
+            let (x, y) = s2e_core::wgs84_to_utm(site.lon, site.lat, zone, north);
             let px = ((x - chip.min_x) / 10.0).round() as isize;
             let py = ((chip.max_y - y) / 10.0).round() as isize;
             let mut observed = 0usize;
@@ -173,8 +173,8 @@ fn urls(item: &Item) -> Result<[&str; 13], String> {
 /// Reference 2 km site footprint, snapped outward to the 60 m grid exactly as
 /// the CDSE Python reader does. The resulting chip is normally 204×204.
 pub fn site_bounds(lon: f64, lat: f64, epsg: i32) -> [f64; 4] {
-    let (zone, north) = s2_flares_core::utm_params(epsg);
-    let (x, y) = s2_flares_core::wgs84_to_utm(lon, lat, zone, north);
+    let (zone, north) = s2e_core::utm_params(epsg);
+    let (x, y) = s2e_core::wgs84_to_utm(lon, lat, zone, north);
     [
         ((x - 1000.0) / 60.0).floor() * 60.0,
         ((y - 1000.0) / 60.0).floor() * 60.0,

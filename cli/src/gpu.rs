@@ -46,7 +46,7 @@ pub fn decode_bands(
     if let Some(ref a) = b8a {
         streams.push(a);
     }
-    let mut out = s2_flares_gpu::decode_batch(&streams)?.into_iter();
+    let mut out = s2e_gpu::decode_batch(&streams)?.into_iter();
     let f12 = out.next().ok_or("gpu decode: missing b12")?.0;
     let f11 = out.next().ok_or("gpu decode: missing b11")?.0;
     let f8a = b8a.is_some().then(|| out.next().map(|t| t.0)).flatten();
@@ -58,12 +58,12 @@ pub fn decode_bands(
 // byte — JP2 is lossless so whole-tile decode yields the same pixels as windowed. needs
 // a CUDA box + eodata creds + net, so #[ignore]'d — run it on the box (box.sh parity):
 //   S2_PARITY_BBOX=W,S,E,N [S2_PARITY_TILE=39RWN] [S2_PARITY_START=… S2_PARITY_END=…] \
-//     cargo test -p s2-flares-cli --release --features gpu parity -- --ignored --nocapture
+//     cargo test -p s2e-cli --release --features gpu parity -- --ignored --nocapture
 #[cfg(test)]
 mod parity {
     use super::*;
     use crate::read::{detect_scene, BulkReader, GdalReader};
-    use s2_flares_core::{Detection, Thresholds};
+    use s2e_core::{Detection, Thresholds};
 
     #[test]
     #[ignore]
@@ -148,11 +148,11 @@ mod parity {
 // full-tile throughput bench: time the windowed reader (the previous impl) vs the
 // bulk readers (cpu whole-band, gpu nvJPEG2000) over real whole tiles. box-only.
 //   S2_BENCH_BBOX=W,S,E,N [S2_BENCH_TILE=39RWN] [S2_BENCH_N=3] [S2_BENCH_START=… END=…] \
-//     cargo test -p s2-flares-cli --release --features gpu bench_readers -- --ignored --nocapture
+//     cargo test -p s2e-cli --release --features gpu bench_readers -- --ignored --nocapture
 #[cfg(test)]
 mod bench {
     use crate::read::{detect_scene, BulkReader, GdalReader, SceneReader};
-    use s2_flares_core::Thresholds;
+    use s2e_core::Thresholds;
     use std::time::Instant;
 
     #[test]
@@ -213,7 +213,7 @@ mod bench {
     // box the GPU's win is offloading decode from scarce CPUs (idle GPU) → all cores
     // free for the frozen detect compute. concurrency-capped to fit the 6 GB vGPU.
     //   S2_BENCH_BBOX=W,S,E,N [S2_BENCH_N=12] [S2_BENCH_C=4] [S2_BENCH_START/END] \
-    //     cargo test -p s2-flares-cli --release --features gpu bench_throughput -- --ignored --nocapture
+    //     cargo test -p s2e-cli --release --features gpu bench_throughput -- --ignored --nocapture
     #[test]
     #[ignore]
     fn bench_throughput() {

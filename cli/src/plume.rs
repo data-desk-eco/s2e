@@ -11,7 +11,7 @@ use crate::stac::Item;
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use gdal::Dataset;
-use s2_flares_core::{detect_block, BlockMeta, Detection, Thresholds};
+use s2e_core::{detect_block, BlockMeta, Detection, Thresholds};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -155,7 +155,7 @@ pub fn save_preview(path: &Path, chip: &Chip, result: &PlumeResult) -> Result<()
         .to_string_lossy();
     let part = path.with_file_name(format!(".{name}.part"));
     let mem = gdal::DriverManager::get_driver_by_name("MEM").map_err(|e| e.to_string())?;
-    let mut dataset = mem
+    let dataset = mem
         .create_with_band_type::<u8, _>("", chip.width, chip.height, 4)
         .map_err(|e| e.to_string())?;
     for band_index in 1..=4 {
@@ -255,7 +255,7 @@ fn lut_scalar_rows(value: &serde_json::Value, key: &str) -> Result<Vec<f64>, Str
         .collect()
 }
 
-fn transmittance_lut(satellite: &str) -> Result<s2_flares_core::plume::TransmittanceLut, String> {
+fn transmittance_lut(satellite: &str) -> Result<s2e_core::plume::TransmittanceLut, String> {
     let root: serde_json::Value =
         serde_json::from_str(include_str!("../assets/integrated_transmittances.json"))
             .map_err(|e| format!("parse methane LUT: {e}"))?;
@@ -263,7 +263,7 @@ fn transmittance_lut(satellite: &str) -> Result<s2_flares_core::plume::Transmitt
     if sat.is_null() {
         return Err(format!("methane LUT lacks {satellite}"));
     }
-    Ok(s2_flares_core::plume::TransmittanceLut {
+    Ok(s2e_core::plume::TransmittanceLut {
         amf: lut_vector(&root, "amf_arr")?,
         methane: lut_rows(&root, "mr_ch4_arr")?,
         b12: lut_rows(sat, "transmittance_b12")?,
@@ -356,14 +356,14 @@ impl<'a> PlumeDetector<'a> {
         // Once the six model bands are selected the upstream default registration
         // channels are [3,2,1] (B08/B04/B03), so retain that slightly unusual but
         // checkpoint-compatible choice.
-        let (aligned_background, _) = s2_flares_core::plume::align_background(
+        let (aligned_background, _) = s2e_core::plume::align_background(
             &target_bands,
             &background_bands,
             target_chip.width,
             target_chip.height,
             [3, 2, 1],
         )?;
-        let input = s2_flares_core::plume::model_input(
+        let input = s2e_core::plume::model_input(
             &target_bands,
             &aligned_background,
             &target_chip.valid,
@@ -378,17 +378,17 @@ impl<'a> PlumeDetector<'a> {
                 *p = 0.0;
             }
         }
-        let components = s2_flares_core::plume::connected_components(
+        let components = s2e_core::plume::connected_components(
             &probability,
             target_chip.width,
             target_chip.height,
-            s2_flares_core::plume::DEFAULT_THRESHOLD,
-            s2_flares_core::plume::DEFAULT_MIN_PIXELS,
+            s2e_core::plume::DEFAULT_THRESHOLD,
+            s2e_core::plume::DEFAULT_MIN_PIXELS,
         );
         // Published code applies `> threshold_pixels` after component retention.
         let components: Vec<_> = components
             .into_iter()
-            .filter(|component| component.len() > s2_flares_core::plume::DEFAULT_MIN_PIXELS)
+            .filter(|component| component.len() > s2e_core::plume::DEFAULT_MIN_PIXELS)
             .collect();
         let mut mask = vec![0u8; probability.len()];
         for component in &components {
@@ -396,11 +396,11 @@ impl<'a> PlumeDetector<'a> {
                 mask[i] = 1;
             }
         }
-        let score = s2_flares_core::plume::scene_score(
+        let score = s2e_core::plume::scene_score(
             &probability,
             target_chip.width,
             target_chip.height,
-            s2_flares_core::plume::DEFAULT_MIN_PIXELS,
+            s2e_core::plume::DEFAULT_MIN_PIXELS,
         );
         result.background = Some(background_id);
         result.wind = Some(wind);
@@ -408,14 +408,14 @@ impl<'a> PlumeDetector<'a> {
         if !components.is_empty() {
             // Quantification deliberately re-registers the full 13-band background:
             // the upstream routine's default [3,2,1] channels are B04/B03/B02 here.
-            let (quant_background, _) = s2_flares_core::plume::align_background(
+            let (quant_background, _) = s2e_core::plume::align_background(
                 &target_chip.values,
                 &background.values,
                 target_chip.width,
                 target_chip.height,
                 [3, 2, 1],
             )?;
-            let ratio = s2_flares_core::plume::retrieval_ratio(
+            let ratio = s2e_core::plume::retrieval_ratio(
                 &target_chip.values,
                 &quant_background,
                 &target_chip.valid,
@@ -427,9 +427,9 @@ impl<'a> PlumeDetector<'a> {
             let satellite = target.id.get(..3).unwrap_or("");
             let lut = transmittance_lut(satellite)?;
             let enhancement =
-                s2_flares_core::plume::methane_enhancement(&ratio, satellite, sza, vza, &lut)?;
+                s2e_core::plume::methane_enhancement(&ratio, satellite, sza, vza, &lut)?;
             let speed = (wind[0] as f64).hypot(wind[1] as f64);
-            let (zone, north) = s2_flares_core::utm_params(target_chip.epsg);
+            let (zone, north) = s2e_core::utm_params(target_chip.epsg);
             for component in components {
                 let mut component_mask = vec![0u8; mask.len()];
                 let (mut sx, mut sy, mut sp, mut max_probability) = (0.0, 0.0, 0.0, 0f32);
@@ -437,14 +437,14 @@ impl<'a> PlumeDetector<'a> {
                     component_mask[i] = 1;
                     max_probability = max_probability.max(probability[i]);
                     // strictly positive: component pixels are strictly above threshold
-                    let w = (probability[i] - s2_flares_core::plume::DEFAULT_THRESHOLD) as f64;
+                    let w = (probability[i] - s2e_core::plume::DEFAULT_THRESHOLD) as f64;
                     sx += w * ((i % target_chip.width) as f64 + 0.5);
                     sy += w * ((i / target_chip.width) as f64 + 0.5);
                     sp += w;
                 }
                 let (flux_rate, flux_rate_std) =
-                    s2_flares_core::plume::flux_rate(&enhancement, &component_mask, speed)?;
-                let (lon, lat) = s2_flares_core::utm_to_wgs84(
+                    s2e_core::plume::flux_rate(&enhancement, &component_mask, speed)?;
+                let (lon, lat) = s2e_core::utm_to_wgs84(
                     target_chip.min_x + 10.0 * sx / sp,
                     target_chip.max_y - 10.0 * sy / sp,
                     zone,
@@ -518,9 +518,9 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let (full, full_shift) =
-            s2_flares_core::plume::align_background(&reference, &moving, width, height, [3, 2, 1])
+            s2e_core::plume::align_background(&reference, &moving, width, height, [3, 2, 1])
                 .unwrap();
-        let (compact, compact_shift) = s2_flares_core::plume::align_background(
+        let (compact, compact_shift) = s2e_core::plume::align_background(
             &selected(&reference),
             &selected(&moving),
             width,
@@ -577,8 +577,7 @@ mod tests {
     fn published_quantification_lut_parity() {
         let ratio = [0.3, 0.5, 0.7, 0.9, 1.0, 1.05, 1.08];
         let lut = transmittance_lut("S2B").unwrap();
-        let methane =
-            s2_flares_core::plume::methane_enhancement(&ratio, "S2B", 35.2, 4.7, &lut).unwrap();
+        let methane = s2e_core::plume::methane_enhancement(&ratio, "S2B", 35.2, 4.7, &lut).unwrap();
         let python = [
             521963.06451834086,
             224366.3522218766,
@@ -594,8 +593,7 @@ mod tests {
                 "rust={rust} python={reference}"
             );
         }
-        let (q, sigma) =
-            s2_flares_core::plume::flux_rate(&methane, &[1, 1, 1, 1, 0, 1, 1], 3.2).unwrap();
+        let (q, sigma) = s2e_core::plume::flux_rate(&methane, &[1, 1, 1, 1, 0, 1, 1], 3.2).unwrap();
         assert!((q - 35381.290492678956).abs() < 0.01, "{q}");
         // Closed-form propagation converges to the upstream Monte Carlo value
         // without retaining its sampling noise.
@@ -605,7 +603,7 @@ mod tests {
     #[test]
     fn probability_raster_is_committed_atomically() {
         let root = std::env::temp_dir().join(format!(
-            "s2-flares-probability-{}-{}",
+            "s2e-probability-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

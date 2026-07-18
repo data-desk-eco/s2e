@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use s2_flares_core::epsg_from_mgrs;
+use s2e_core::epsg_from_mgrs;
 use serde_json::Value;
 
 #[derive(Clone, Debug)]

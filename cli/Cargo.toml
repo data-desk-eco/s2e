@@ -1,15 +1,15 @@
 [package]
-name = "s2-flares-cli"
+name = "s2e-cli"
 version.workspace = true
 edition.workspace = true
 description = "Native Sentinel-2 flare and methane-plume detection"
 
 [[bin]]
-name = "s2-flares"
+name = "s2e"
 path = "src/main.rs"
 
 [dependencies]
-s2-flares-core = { path = "../core", features = ["serde"] }
+s2e-core = { path = "../core", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 gdal = { version = "0.17", features = ["bindgen"] }
 gdal-sys = "0.10"
@@ -22,7 +22,7 @@ sha2 = "0.10"
 chrono = "0.4"
 # gpu path only — the CUDA shim crate + raw /vsis3 byte read (VSIF*). off by default
 # so the cpu and wasm builds stay CUDA-free (cli/wasm builds never pull either dep).
-s2-flares-gpu = { path = "../gpu", optional = true }
+s2e-gpu = { path = "../gpu", optional = true }
 
 [features]
-gpu = ["dep:s2-flares-gpu"]
+gpu = ["dep:s2e-gpu"]

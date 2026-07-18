@@ -15,7 +15,7 @@ mod view;
 
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use rayon::prelude::*;
-use s2_flares_core::{
+use s2e_core::{
     cluster_detections, pad_bbox, Cluster, ClusterOptions, Detection, Site, Thresholds,
 };
 use std::fs;
@@ -23,7 +23,7 @@ use std::path::Path;
 
 /// Native Sentinel-2 flare and methane-plume detection.
 #[derive(Parser)]
-#[command(name = "s2-flares", version, about, long_about = None)]
+#[command(name = "s2e", version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -40,7 +40,7 @@ enum Cmd {
         /// region scans currently support the flare mode only.
         #[arg(long, value_enum, default_value_t = DetectorMode::Both)]
         mode: DetectorMode,
-        /// Model/cache directory (default: $S2_MODELS or ~/.cache/s2-flares/models).
+        /// Model/cache directory (default: $S2_MODELS or ~/.cache/s2e/models).
         #[arg(long, value_name = "DIR")]
         models: Option<String>,
         /// Fixed wind components for reproducible/offline plume runs. Supply both;
@@ -91,18 +91,20 @@ enum Cmd {
         #[arg(long, value_name = "DIR")]
         dir: Option<String>,
     },
-    /// Publish canonical GeoJSON records unchanged and optionally rebuild
-    /// disposable Parquet views for bulk queries and the web map.
+    /// Publish canonical GeoJSON records and assets unchanged.
     Archive {
         /// Detection output containing observations/ and optional assets/.
         #[arg(long, value_name = "DIR", default_value = "out")]
         input: String,
-        /// Local directory or s3:// bucket/prefix. Omit to derive views in place.
+        /// Local directory or s3:// bucket/prefix.
         #[arg(long, value_name = "PATH")]
         destination: Option<String>,
-        /// Rebuild detections/, clouds/ and plumes/ Parquet views from GeoJSON.
-        #[arg(long)]
-        views: bool,
+    },
+    /// Rebuild the disposable detections/, clouds/ and plumes/ Parquet views
+    /// from the GeoJSON records under ROOT (local dir or s3:// prefix).
+    Views {
+        #[arg(long, value_name = "ROOT")]
+        root: String,
     },
 }
 
@@ -415,15 +417,15 @@ fn main() {
             models::CloudModel::load(&paths.clouds).unwrap_or_else(|e| die(&e));
             println!("models ready: {}", dir.display());
         }
-        Cmd::Archive {
-            input,
-            destination,
-            views,
-        } => {
+        Cmd::Archive { input, destination } => {
             let destination = destination.as_deref().unwrap_or(input);
-            archive::publish(Path::new(input), destination, *views)
+            archive::publish(Path::new(input), destination)
                 .unwrap_or_else(|e| die(&format!("archive: {e}")));
             println!("archive ready: {destination}");
+        }
+        Cmd::Views { root } => {
+            archive::derive_views(root).unwrap_or_else(|e| die(&format!("views: {e}")));
+            println!("views ready: {root}");
         }
     }
 }
@@ -441,7 +443,7 @@ fn aoi_fits_chip(aoi: &Aoi, chip: &plume::Chip, epsg: i32) -> bool {
     if aoi.full_tile {
         return false;
     }
-    let (zone, north) = s2_flares_core::utm_params(epsg);
+    let (zone, north) = s2e_core::utm_params(epsg);
     let corners = [
         (aoi.bbox[0], aoi.bbox[1]),
         (aoi.bbox[0], aoi.bbox[3]),
@@ -449,7 +451,7 @@ fn aoi_fits_chip(aoi: &Aoi, chip: &plume::Chip, epsg: i32) -> bool {
         (aoi.bbox[2], aoi.bbox[3]),
     ];
     corners.into_iter().all(|(lon, lat)| {
-        let (x, y) = s2_flares_core::wgs84_to_utm(lon, lat, zone, north);
+        let (x, y) = s2e_core::wgs84_to_utm(lon, lat, zone, north);
         x >= chip.min_x
             && x <= chip.min_x + chip.width as f64 * 10.0
             && y <= chip.max_y
@@ -560,7 +562,7 @@ fn run_cluster(
 // (persistence skipped, as when coverage is absent). no STAC search, no second SCL pass.
 fn clouds_rescore(glob: &str, start: &str, end: &str, clusters: &mut [Cluster]) {
     use std::collections::{HashMap, HashSet};
-    let step = s2_flares_core::GRID_STEP;
+    let step = s2e_core::GRID_STEP;
     // the join only ever reads each anchor's own cell + its 3×3 fallback, so precompute
     // that cell-key set (≤ 9·clusters) and keep ONLY those while streaming the mask — peak
     // memory is O(anchors), not O(mask). materialising the whole multi-GB mask OOM'd the box.
@@ -570,7 +572,7 @@ fn clouds_rescore(glob: &str, start: &str, end: &str, clusters: &mut [Cluster]) 
         for dj in -1..=1 {
             for di in -1..=1 {
                 let (lon, lat) = (cl.lon + di as f64 * step, cl.lat + dj as f64 * step);
-                needed.insert(s2_flares_core::cell_key(lon, lat));
+                needed.insert(s2e_core::cell_key(lon, lat));
                 cells.insert(((lon / step).round() as i64, (lat / step).round() as i64));
             }
         }
@@ -578,8 +580,8 @@ fn clouds_rescore(glob: &str, start: &str, end: &str, clusters: &mut [Cluster]) 
     // cell key → the distinct dates that cell was observed CLEAR (relevant cells only).
     let mut clear: HashMap<String, HashSet<String>> = HashMap::new();
     view::read_clouds(glob, start, end, &cells, |glon, glat, date, cf| {
-        if cf <= s2_flares_core::CLEAR_MAX {
-            let k = s2_flares_core::cell_key(glon, glat);
+        if cf <= s2e_core::CLEAR_MAX {
+            let k = s2e_core::cell_key(glon, glat);
             if needed.contains(&k) {
                 clear.entry(k).or_default().insert(date.to_string());
             }
@@ -591,7 +593,7 @@ fn clouds_rescore(glob: &str, start: &str, end: &str, clusters: &mut [Cluster]) 
         let mut dates: HashSet<String> = cl.detections.iter().map(|d| d.date.clone()).collect();
         // the anchor's own cell first; only if it carries no mask rows fall back to the
         // 3×3 neighbourhood (cell-edge anchor) — avoids inflating the denominator.
-        let own = s2_flares_core::cell_key(cl.lon, cl.lat);
+        let own = s2e_core::cell_key(cl.lon, cl.lat);
         let hit = if clear.contains_key(&own) {
             clear
                 .get(&own)
@@ -604,7 +606,7 @@ fn clouds_rescore(glob: &str, start: &str, end: &str, clusters: &mut [Cluster]) 
             let mut any = false;
             for dj in -1..=1 {
                 for di in -1..=1 {
-                    if let Some(s) = clear.get(&s2_flares_core::cell_key(
+                    if let Some(s) = clear.get(&s2e_core::cell_key(
                         cl.lon + di as f64 * step,
                         cl.lat + dj as f64 * step,
                     )) {

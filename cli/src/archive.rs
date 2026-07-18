@@ -79,7 +79,7 @@ fn aws_sync(source: &Path, destination: &str) -> Result<(), String> {
     }
 }
 
-pub fn publish(input: &Path, destination: &str, views: bool) -> Result<(), String> {
+pub fn publish(input: &Path, destination: &str) -> Result<(), String> {
     let observations = input.join("observations");
     let assets = input.join("assets");
     if destination.starts_with("s3://") {
@@ -91,9 +91,6 @@ pub fn publish(input: &Path, destination: &str, views: bool) -> Result<(), Strin
             copy_tree(&observations, &destination_path.join("observations"))?;
             copy_tree(&assets, &destination_path.join("assets"))?;
         }
-    }
-    if views {
-        derive_views(destination)?;
     }
     Ok(())
 }

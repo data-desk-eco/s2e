@@ -1,5 +1,5 @@
 //! the derived cluster *view* — never the archive. produced by a separate
-//! `s2-flares cluster` run over the detection archive (or a fresh detect), one row
+//! `s2e cluster` run over the detection archive (or a fresh detect), one row
 //! per cluster + a nested `detections` list column. the web map column-projects to
 //! read scalar columns only (cheap pins) and reclusters raw detections via wasm for
 //! custom windows; a journalist gets the rich geojson.
@@ -7,7 +7,7 @@
 //! duckdb owns the parquet+s3 i/o (the stated analytics/archive layer); rust core
 //! owns the clustering. the seam is a flat csv handoff — no native parquet deps.
 
-use s2_flares_core::{Cluster, Detection};
+use s2e_core::{Cluster, Detection};
 use std::process::{Command, Stdio};
 
 pub(crate) fn tmp(name: &str) -> std::path::PathBuf {
@@ -144,7 +144,7 @@ pub fn read_clouds(
         .collect::<Vec<_>>()
         .join("\n");
     std::fs::write(&cf, body).map_err(|e| format!("write cells: {e}"))?;
-    let inv = (1.0 / s2_flares_core::GRID_STEP).round();
+    let inv = (1.0 / s2e_core::GRID_STEP).round();
     let sql = format!(
         "{prelude}SELECT DISTINCT glon, glat, date, cloud_frac \
          FROM read_parquet('{glob}', union_by_name=true) \

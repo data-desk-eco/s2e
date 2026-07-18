@@ -11,7 +11,7 @@
 use crate::stac::Item;
 use gdal::raster::ResampleAlg;
 use gdal::Dataset;
-use s2_flares_core::{
+use s2e_core::{
     cover_sites, detect_block, enumerate_blocks, grid_sites, Block, BlockMeta, Detection, Site,
     Thresholds, BLOCK_OVERLAP, BLOCK_SIZE,
 };
@@ -340,9 +340,9 @@ pub(crate) fn all_blocks(w: usize, h: usize) -> Vec<Block> {
 /// clamp the query bbox to the b12 image extent, in utm — the overview read window.
 pub(crate) fn region_utm_bbox(b12: &Raster, bbox: [f64; 4], epsg: i32) -> [f64; 4] {
     let [imx, imy, i_mx, i_my] = b12.bbox;
-    let (zone, is_north) = s2_flares_core::utm_params(epsg);
-    let sw = s2_flares_core::wgs84_to_utm(bbox[0], bbox[1], zone, is_north);
-    let ne = s2_flares_core::wgs84_to_utm(bbox[2], bbox[3], zone, is_north);
+    let (zone, is_north) = s2e_core::utm_params(epsg);
+    let sw = s2e_core::wgs84_to_utm(bbox[0], bbox[1], zone, is_north);
+    let ne = s2e_core::wgs84_to_utm(bbox[2], bbox[3], zone, is_north);
     [sw.0.max(imx), sw.1.max(imy), ne.0.min(i_mx), ne.1.min(i_my)]
 }
 
@@ -734,9 +734,9 @@ pub fn cloud_scene(item: &Item, bbox: [f64; 4], full_tile: bool) -> Vec<(String,
         y1 = y1.max(b.window[3]);
     }
     // pixel union → utm → wgs84 bbox (utm is rotated, so reproject all four corners).
-    let (zone, isn) = s2_flares_core::utm_params(item.epsg);
+    let (zone, isn) = s2e_core::utm_params(item.epsg);
     let px = |x: usize, y: usize| {
-        s2_flares_core::utm_to_wgs84(
+        s2e_core::utm_to_wgs84(
             r.bbox[0] + x as f64 * r.res_x,
             r.bbox[3] - y as f64 * r.res_y,
             zone,
@@ -784,7 +784,7 @@ pub fn detect_scene(
 // cpu-only half of the parity gate: bulk whole-band slicing == windowed reads, over
 // real (anonymous AWS COG) scenes — runs anywhere with net, no CUDA/eodata. the gpu
 // half lives in gpu.rs (box-only). #[ignore]'d (network):
-//   S2_PARITY_BBOX=W,S,E,N cargo test -p s2-flares-cli --release parity_cpu -- --ignored --nocapture
+//   S2_PARITY_BBOX=W,S,E,N cargo test -p s2e-cli --release parity_cpu -- --ignored --nocapture
 #[cfg(test)]
 mod parity_cpu {
     use super::*;

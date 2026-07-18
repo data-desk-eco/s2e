@@ -1,6 +1,6 @@
 # aoi — areas of interest
 
-Site catalogues that drive detection runs. The s2-flares CLI is the single
+Site catalogues that drive detection runs. The s2e CLI is the single
 entrypoint: `--aoi <file.geojson>` runs detection over every feature (its geometry
 bounds + `--buffer` km is the search box; the feature's `id`/`name` properties tag
 the output). Any GeoJSON works — the **standard AOI schema** is just a
@@ -12,7 +12,7 @@ quirks (filtering, dedup, geometry) so the CLI stays generic. A `.sh` builds the
 AOIs and kicks off the run; the built `.geojson` is what ships to the box.
 
 For most targeting you no longer need a curated file here at all:
-`cloud/emissions.sh aoi` builds a standard AOI geojson straight from the ch4id
+`cloud/box.sh aoi` builds a standard AOI geojson straight from the ch4id
 features catalogue on the store — by `k=v` filters (`kind=lng_terminal,
 status=operating,dataset=gem`) or by any provider's feature ids
 (`GEM:…`, `OGIM:…`, `OSM:…`, `MPS:…`).
@@ -53,7 +53,7 @@ cloud/box.sh run --aoi aoi/lng-terminals.geojson --start 2025-01-01 --end 2025-1
 The run is recall-first (`LOOSE`); each scene's detections land at
 `<out>/<ProjectID>/<mgrs>_<date>.csv` (file presence == done → resumable). On the
 box, `box.sh archive` then grows the per-tile parquet archive on object storage.
-Quality scoring is downstream — derive the cluster view (`s2-flares cluster
+Quality scoring is downstream — derive the cluster view (`s2e cluster
 --archive …`, same `core` score) or query the archive in DuckDB. Tunables are env
 vars in the `.sh` (`START`/`END`, `OUT`, `SOURCE`, `S2_CONCURRENCY`, …).
 

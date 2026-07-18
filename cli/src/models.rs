@@ -33,11 +33,10 @@ impl ModelPaths {
         std::env::var_os("S2_MODELS")
             .map(PathBuf::from)
             .or_else(|| {
-                std::env::var_os("XDG_CACHE_HOME")
-                    .map(|p| PathBuf::from(p).join("s2-flares/models"))
+                std::env::var_os("XDG_CACHE_HOME").map(|p| PathBuf::from(p).join("s2e/models"))
             })
             .or_else(|| {
-                std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cache/s2-flares/models"))
+                std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cache/s2e/models"))
             })
             .unwrap_or_else(|| PathBuf::from(".models"))
     }

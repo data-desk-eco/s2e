@@ -38,20 +38,15 @@ s2-flares archive --input out --destination s3://$BUCKET --views
 The command publishes `observations/` and `assets/` unchanged, then uses DuckDB to
 rebuild disposable views:
 
-- `detections/mgrs=<tile>/data.parquet`: flat flare-query view.
-- `clouds/data.parquet`: clear-sky persistence input.
-- `plumes/results.parquet`: scene analysis plus one row per plume component.
-- `clusters/mgrs=<tile>/data.parquet`: derived by the subsequent native `cluster`
-  command for the requested full-window snapshot.
-- `coverage.geojson`: accumulated AOI coverage.
-
 Only GeoJSON analysis records and their referenced assets are authoritative.
-Deleting and rebuilding the Parquet products loses no detector output.
+Deleting and rebuilding the Parquet products loses no detector output. The full
+store layout, producers and cadence live in `data-desk/DATASETS.md`; bucket
+config (public-read + CORS) is `data-desk/store.sh publish`.
 
 ## Infrastructure
 
 Cloud-init installs Rust, GDAL, DuckDB and awscli. Per-VM `/vsis3/eodata`
 credentials are written from metadata at boot. Model files are cached and checked
-against hashes pinned in `cli/src/models.rs`. OpenStack operations use the vendored
-2FA openrc; `.env` can provide `CLOUDFERRO_PASSWORD` and
-`CLOUDFERRO_TOTP_SECRET` for non-interactive operation.
+against hashes pinned in `cli/src/models.rs`. OpenStack operations use the 2FA
+openrc vendored in `data-desk/`, whose `.env` can provide `CLOUDFERRO_PASSWORD`
+and `CLOUDFERRO_TOTP_SECRET` for non-interactive operation.

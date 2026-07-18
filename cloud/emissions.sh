@@ -5,7 +5,7 @@
 set -euo pipefail
 CALLER="$PWD"
 cd "$(dirname "$0")"
-. ./store.sh
+. "${DATA_DESK:-$HOME/Tools/data-desk}/store.sh"
 
 # Shared infrastructure catalogue → detector AOI. QUERY is comma-separated k=v
 # filters or a comma-separated set of feature ids.

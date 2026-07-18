@@ -28,7 +28,8 @@ fi
 : "${REPO_DIR:=s2-flares}"      # repo path on the box
 : "${OUT:=out}"                 # box-side output dir (one durable record per acquisition)
 : "${LOCAL_DATA:=../data/cf}"   # where `pull` lands the CSVs
-. ./store.sh                    # the shared datadesk store (bucket/region/creds)
+DD=${DATA_DESK:-$HOME/Tools/data-desk}
+. "$DD/store.sh"                # the shared datadesk store (bucket/region/creds)
 : "${BUCKET:=$STORE_BUCKET}"    # CloudFerro object-storage container for `archive`
 : "${RATE:=0.066}"              # eo1.large pay-per-use €/h (WAW3-2); override per flavor
 
@@ -57,13 +58,13 @@ s3creds(){
 
 auth(){
   [ -n "${OS_TOKEN:-}" ] && return 0   # reuse the session within one invocation (one TOTP use)
-  [ -f ../.env ] && . ../.env; [ -f .env ] && . .env
+  [ -f "$DD/.env" ] && . "$DD/.env"
   set +eu   # the vendored openrc is written for a lax shell (unset OS_* refs, own `return`s)
   if [ -n "${CLOUDFERRO_TOTP_SECRET:-}" ] && command -v oathtool >/dev/null; then
-    source ./s2-flares-openrc-2fa.sh >/dev/null \
+    source "$DD/openrc-2fa.sh" >/dev/null \
       < <(printf '%s\n%s\n' "${CLOUDFERRO_PASSWORD:-}" "$(oathtool -b --totp "$CLOUDFERRO_TOTP_SECRET")")
   else
-    source ./s2-flares-openrc-2fa.sh
+    source "$DD/openrc-2fa.sh"
   fi
   set -eu
   unset IFS   # the openrc leaves IFS=$'\n'; restore default splitting (else `ssh $SSHOPTS` collapses to one arg)
@@ -334,24 +335,6 @@ PY
   "${s3[@]}" cp --acl public-read "$tmp/new.json" "s3://$BUCKET/coverage.geojson"
 }
 
-# web-map backend: anonymous public-read on every published prefix of the shared
-# datadesk store (see store.sh — s2's detections/clusters/coverage plus burnoff's
-# vnf/, firedamp's plumes/ and ch4id's features/) + CORS, so a browser can
-# range-read directly. clouds/ stays private (internal build artifact). this is the
-# ONE place bucket-level config lives — the sibling repos only PUT their objects.
-# one-time per bucket; needs aws-cli. (README)
-publish(){
-  auth
-  command -v aws >/dev/null || { echo "publish needs aws-cli (brew install awscli)" >&2; exit 1; }
-  local ak sk; read -r ak sk < <(s3creds)
-  local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
-    aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api)
-  say "Publishing s3://$BUCKET/{observations,assets,detections,clusters,plumes,features,coverage.geojson} for web-map access (public-read + CORS)"
-  "${aws_s3[@]}" put-bucket-cors --bucket "$BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/observations/*","arn:aws:s3:::'"$BUCKET"'/assets/*","arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*","arn:aws:s3:::'"$BUCKET"'/plumes/*","arn:aws:s3:::'"$BUCKET"'/features/*","arn:aws:s3:::'"$BUCKET"'/ch4id/*","arn:aws:s3:::'"$BUCKET"'/coverage.geojson"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
-  echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters,coverage.geojson}…"
-}
-
 # instant local cost estimate: FLEET × uptime × RATE (billing portal is daily, too
 # coarse for a run in flight). assumes auth; `cost` wraps it.
 costline(){
@@ -450,7 +433,8 @@ all(){ up; run "$@"; watch
 
 case "${1:-}" in
   up) up;; image) image;; ip) ip;; ssh) shift; go_ssh "${1:-0}";; cost) cost;; down) down;;
-  run) shift; run "$@";; watch) watch;; status) status;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; parity) parity;;
+  run) shift; run "$@";; watch) watch;; status) status;; pull) pull;; archive) archive;; verify) verify;; parity) parity;;
   coverage) shift; coverage "${1:-}";; launch) shift; launch "$@";; all) shift; all "$@";;
-  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | status | pull | archive | coverage [aoi] | verify | publish | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
+  publish) echo "bucket config moved: \$DATA_DESK/store.sh publish" >&2; exit 1;;
+  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | status | pull | archive | coverage [aoi] | verify | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
 esac

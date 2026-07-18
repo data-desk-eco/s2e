@@ -1,0 +1,24 @@
+name: release
+
+# tag push → linux binary published to the store at bin/s2e (latest) and
+# bin/s2e-<tag> (pinned). the etl repo's views.yml runs it on cadence.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: sudo apt-get update && sudo apt-get install -y gdal-bin libgdal-dev clang libclang-dev
+      - run: cargo build --release -p s2e-cli
+      - name: publish to the store
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFERRO_S3_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFERRO_S3_SECRET }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          aws --endpoint-url https://s3.WAW3-2.cloudferro.com s3 cp target/release/s2e "s3://datadesk-archive/bin/s2e-$GITHUB_REF_NAME" --no-progress
+          aws --endpoint-url https://s3.WAW3-2.cloudferro.com s3 cp target/release/s2e s3://datadesk-archive/bin/s2e --no-progress

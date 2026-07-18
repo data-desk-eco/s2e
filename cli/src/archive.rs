@@ -218,7 +218,7 @@ pub fn derive_views(root: &str) -> Result<(), String> {
     }
 
     let plume_glob = quote(&join(root, "observations/**/plumes-*.geojson"));
-    let plume_output = join(root, "plumes/results.parquet");
+    let plume_output = join(root, "retrievals/data.parquet");
     let validity = plume_validity();
     if has(&join(root, "observations/**/plumes-*.geojson"))? {
         local_parent(&plume_output)?;

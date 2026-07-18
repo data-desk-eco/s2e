@@ -3,7 +3,9 @@
 # reference, auth (.env), fleet model, and the published archive layout.
 set -euo pipefail
 SELF_PWD="$PWD"             # caller's cwd — to resolve relative --aoi paths after the cd below
-cd "$(dirname "$0")"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "$SCRIPT_DIR"
+PROJECT_ROOT=$(cd .. && pwd)
 
 # GPU=1 → the full-tile nvJPEG2000 path (gpu cloud-init + L40S flavor + NVIDIA image).
 if [ "${GPU:-}" = 1 ]; then
@@ -24,7 +26,7 @@ fi
 : "${EXTNET:=external}"
 : "${EODATANET:=eodata}"
 : "${REPO_DIR:=s2-flares}"      # repo path on the box
-: "${OUT:=out}"                 # box-side output dir (s2-flares detect writes <OUT>/<id>/<mgrs>_<date>.csv)
+: "${OUT:=out}"                 # box-side output dir (one durable record per acquisition)
 : "${LOCAL_DATA:=../data/cf}"   # where `pull` lands the CSVs
 . ./store.sh                    # the shared datadesk store (bucket/region/creds)
 : "${BUCKET:=$STORE_BUCKET}"    # CloudFerro object-storage container for `archive`
@@ -32,6 +34,11 @@ fi
 
 SSHOPTS="-o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
 say(){ printf '\033[1;36m→ %s\033[0m\n' "$*"; }
+wait_all(){
+  local failed=0 pid
+  for pid in "$@"; do wait "$pid" || failed=1; done
+  return "$failed"
+}
 # fleet members are $VM-0 … $VM-(FLEET-1), each with its own floating IP in .box-ip-<i>.
 # `run` pins the active member count in .fleet (a bbox run writes 1); every op that
 # post-dates it reads .fleet so the fan-out matches exactly the boxes that ran.
@@ -93,7 +100,9 @@ up(){
   auth; infra; resolve_image
   local netid eoid; netid=$(openstack network show "$NET" -f value -c id); eoid=$(openstack network show "$EODATANET" -f value -c id)
   say "Booting fleet of $FLEET ($FLAVOR) in parallel — a few minutes…"
-  local i; for i in $(seq 0 $((FLEET-1))); do boot_member "$i" "$netid" "$eoid" & done; wait
+  local i; local -a pids=()
+  for i in $(seq 0 $((FLEET-1))); do boot_member "$i" "$netid" "$eoid" & pids+=("$!"); done
+  wait_all "${pids[@]}"
   printf '\n\033[1;32m✓ provisioned %s members\033[0m  →  ./box.sh ssh [i]\n' "$FLEET"
 }
 
@@ -160,9 +169,12 @@ run(){
   local feat="" cudaenv=""
   if [ "${GPU:-}" = 1 ]; then feat=" --features gpu"; cudaenv=". /etc/profile.d/cuda.sh && "
     [[ " ${rest[*]} " == *" --gpu "* ]] || rest+=(--gpu); fi
-  for i in $(seq 0 $((n-1))); do start_member "$i" "$aoi" "$feat" "$cudaenv" "${rest[@]}" & done; wait
-  say "Fleet detached & resumable — streaming progress (Ctrl-C is safe, the runs continue)"
-  watch
+  local -a pids=()
+  for i in $(seq 0 $((n-1))); do
+    start_member "$i" "$aoi" "$feat" "$cudaenv" "${rest[@]}" & pids+=("$!")
+  done
+  wait_all "${pids[@]}"
+  say "Fleet detached & resumable — follow with ./box.sh watch"
 }
 # poll until cloud-init produced a working toolchain + built tree (rides out sshd-not-
 # yet-up: mssh fails → retry). cold box ~5-8min; golden boot near-instant. capped ~20min.
@@ -176,13 +188,18 @@ start_member(){
   local i=$1 aoi=$2 feat=$3 cudaenv=$4; shift 4; local rest=("$@") ip aoiarg=""; ip=$(mip "$i")
   say "  [$i] waiting for cloud-init (rust/gdal/first build)…"
   wait_ready "$i" || { echo "  [$i] not ready after ~20min — check ./box.sh ssh $i" >&2; return 1; }
+  say "  [$i] sync native Rust implementation"
+  rsync -az --delete -e "ssh $SSHOPTS -i $KEYFILE" \
+    --exclude .git --exclude target --exclude out --exclude data --exclude .env \
+    --exclude 'cloud/.box-ip-*' --exclude cloud/.fleet \
+    "$PROJECT_ROOT/" "eouser@$ip:$REPO_DIR/"
   if [ -n "$aoi" ]; then
     scp -q $SSHOPTS -i "$KEYFILE" "/tmp/_shard-$i.geojson" "eouser@$ip:$REPO_DIR/_aoi.geojson"
     aoiarg="--aoi _aoi.geojson"; fi
   say "  [$i] build (incremental)$feat"
-  mssh "$i" "cd $REPO_DIR && git pull -q && . \$HOME/.cargo/env && ${cudaenv}cargo build --release -q -p s2-flares-cli$feat"
+  mssh "$i" "cd $REPO_DIR && . \$HOME/.cargo/env && ${cudaenv}cargo build --release -q -p s2-flares-cli$feat"
   # stop any running detect first (re-run is idempotent/resumable — no racing detects).
-  mssh "$i" "pkill -x s2-flares 2>/dev/null; sleep 1; cd $REPO_DIR && nohup bash -lc './target/release/s2-flares detect --source cdse $aoiarg ${rest[*]} --out $OUT' >/tmp/cfrun.log 2>&1 & sleep 1; echo '  [$i] detect started'"
+  mssh "$i" "pkill -x s2-flares 2>/dev/null; sleep 1; cd $REPO_DIR && setsid -f bash -lc '. /etc/profile.d/eodata.sh && exec ./target/release/s2-flares detect --source cdse-l1c $aoiarg ${rest[*]} --out $OUT' >/tmp/cfrun.log 2>&1 </dev/null; sleep 1; echo '  [$i] detect started'"
 }
 # round-robin split → /tmp/_shard-<i>.geojson (balanced slices; keeps the cli generic).
 shard_aoi(){ python3 - "$1" "$2" <<'PY'
@@ -214,6 +231,19 @@ watch(){
   done
 }
 
+# One-shot fleet progress. Unlike watch this never attaches to the run.
+status(){
+  local n i; n=$(fleetn)
+  for i in $(seq 0 $((n-1))); do
+    echo "── box $i ──"
+    mssh "$i" 'pgrep -af "[s]2-flares detect" | sed "s/^/  running: /"
+      tail -3 /tmp/cfrun.log 2>/dev/null | sed "s/^/  /"
+      printf "  analysis records: "; find s2-flares/out/observations -name "*.geojson" 2>/dev/null | wc -l
+      printf "  retryable errors: "; find s2-flares/out/observations -name "*.err" 2>/dev/null | wc -l
+      printf "  plume assets: "; find s2-flares/out/assets -name "plumes-*.tif" 2>/dev/null | wc -l' || true
+  done
+}
+
 # gpu↔cpu parity gate (gpu box only): nvJPEG2000 == GDAL/OpenJPEG detections byte-for-
 # byte over real scenes. set PARITY_BBOX (small); narrow with PARITY_TILE/START/END.
 parity(){
@@ -225,33 +255,34 @@ parity(){
 }
 
 pull(){
-  local n i; n=$(fleetn); mkdir -p "$LOCAL_DATA"
+  local n i; local -a pids=(); n=$(fleetn); mkdir -p "$LOCAL_DATA"
   for i in $(seq 0 $((n-1))); do
     say "Pull $(mvm "$i"):$OUT → $LOCAL_DATA"
     rsync -az -e "ssh $SSHOPTS -i $KEYFILE" "eouser@$(mip "$i"):$REPO_DIR/$OUT/" "$LOCAL_DATA/" &
-  done; wait
-  echo "  $(find "$LOCAL_DATA" -name '*.csv' | wc -l | tr -d ' ') scene CSVs in $LOCAL_DATA"
+    pids+=("$!")
+  done
+  wait_all "${pids[@]}"
+  echo "  fleet output synced into $LOCAL_DATA"
 }
 
-# roll the per-scene CSVs up into the published artifacts (detections/, clouds/,
-# clusters/) in one head-side pass, then refresh coverage.geojson. each worker holds
-# only its shard, so we GATHER every member's files onto the head first — one rollup
-# there sees the whole archive (clean per-tile DISTINCT, complete cloud mask). duckdb
-# (rollup) + the cli (cluster) then run on the head. see cloud/README.md for the layout.
+# Gather the fleet's immutable GeoJSON analysis records onto the head, publish them
+# unchanged, then let the native CLI rebuild disposable columnar views.
 archive(){
   auth
   openstack container show "$BUCKET" >/dev/null 2>&1 || { say "Bucket $BUCKET"; openstack container create "$BUCKET" >/dev/null; }
   local ak sk; read -r ak sk < <(s3creds)
   local n i; n=$(fleetn)
-  # gather workers' CSVs → head (tar piped via local host — workers can't ssh each
-  # other; CSVs are tiny). distinct <id>/ dirs → no collision.
+  # Gather every durable scene record → head (workers cannot ssh each other).
   for ((i=1; i<n; i++)); do
-    say "Gather $(mvm "$i") CSVs → head"
+    say "Gather $(mvm "$i") outputs → head"
     mssh "$i" "cd $REPO_DIR/$OUT 2>/dev/null && tar cf - . || true" | mssh 0 "mkdir -p $REPO_DIR/$OUT && tar xf - -C $REPO_DIR/$OUT"
   done
-  say "Archive $OUT → s3://$BUCKET/{detections (per-tile parquet),clouds (cloud mask)}"
-  local b64; b64=$(printf '%s' "$ARCHIVER" | base64 | tr -d '\n')
-  mssh 0 "echo $b64 | base64 -d | AK='$ak' SK='$sk' REGION='$OS_REGION_NAME' BUCKET='$BUCKET' OUT='$REPO_DIR/$OUT' bash"
+  say "Publish $OUT → s3://$BUCKET/{observations,assets} + derived views"
+  mssh 0 "cd $REPO_DIR && \
+        S2_S3_ENDPOINT='s3.$OS_REGION_NAME.cloudferro.com' S2_S3_REGION='$OS_REGION_NAME' \
+        S2_S3_ACCESS_KEY='$ak' S2_S3_SECRET_KEY='$sk' \
+        ./target/release/s2-flares archive --input '$REPO_DIR/$OUT' \
+          --destination 's3://$BUCKET' --views"
   say "Cluster view (+ clear-sky persistence, joined against clouds/) → s3://$BUCKET/clusters/mgrs=…/"
   # persistence folds in via the cloud mask (anchor's ~100 m cell ⋈ clouds/) — pure
   # duckdb, no 2nd SCL pass. persistence window == detection window (START/END drive both).
@@ -303,52 +334,6 @@ PY
   "${s3[@]}" cp --acl public-read "$tmp/new.json" "s3://$BUCKET/coverage.geojson"
 }
 
-# runs on the head: merge each affected detection tile into its existing archive
-# object, then append one deterministic cloud-mask object for this run. Detection
-# objects are small enough to stage locally before replacing their S3 source key.
-# Clouds are deliberately an immutable collection: a global DISTINCT merge needed
-# >30 GB external-sort scratch, while downstream already set-dedups clear dates.
-ARCHIVER=$(cat <<'EOS'
-set -euo pipefail
-DDB=~/.duckdb/cli/latest/duckdb
-S3="INSTALL httpfs; LOAD httpfs;
-SET s3_endpoint='s3.$REGION.cloudferro.com'; SET s3_region='$REGION';
-SET s3_url_style='path'; SET s3_use_ssl=true;
-SET s3_access_key_id='$AK'; SET s3_secret_access_key='$SK';"
-# Authenticated listing (clouds/ is intentionally private, so an HTTP HEAD is 403).
-existing=$("$DDB" -csv -noheader -c "$S3 SELECT file FROM glob('s3://$BUCKET/detections/**/data.parquet');")
-exists(){ grep -Fxq "s3://$BUCKET/$1" <<<"$existing"; }
-# Tiles with ≥1 detection (skip header-only scenes); inspect only the second line.
-# `wc -l` read every multi-MB CSV in full and made this inventory take >25 minutes.
-tiles=$(python3 - "$OUT" <<'PY'
-import glob,os,sys
-seen=set()
-for f in glob.iglob(os.path.join(sys.argv[1],'*','*.csv')):
-    with open(f,'rb') as h:
-        h.readline()
-        if h.readline(): seen.add(os.path.basename(f).rsplit('_',1)[0])
-print('\n'.join(sorted(seen)))
-PY
-)
-for m in $tiles; do
-  tmp="/tmp/detections-$m.parquet"; rm -f "$tmp"
-  local="SELECT * EXCLUDE(mgrs) FROM read_csv('$OUT/*/${m}_*.csv', union_by_name=true)"
-  if exists "detections/mgrs=$m/data.parquet"; then
-    src="SELECT * FROM ($local UNION BY NAME SELECT * FROM read_parquet('s3://$BUCKET/detections/mgrs=$m/data.parquet', hive_partitioning=false))"
-  else src="$local"; fi
-  "$DDB" -c "$S3 COPY (SELECT DISTINCT * FROM ($src) ORDER BY date) TO '$tmp' (FORMAT parquet); COPY (SELECT * FROM read_parquet('$tmp')) TO 's3://$BUCKET/detections/mgrs=$m/data.parquet' (FORMAT parquet);"
-  rm -f "$tmp"
-done
-# clouds/ grows as immutable run objects. Hashing the sorted scene keys makes a retry
-# idempotently overwrite the same object; no old object is read and no global sort or
-# local staging is required. Exact duplicate cells across runs are harmless because
-# clouds_rescore stores distinct dates per cell.
-cloud_key=$(find "$OUT" -name '*.cld' -type f -printf '%P\n' | sort | sha256sum | cut -c1-20)
-"$DDB" -c "$S3 COPY (SELECT glon,glat,date,cloud_frac FROM read_csv('$OUT/*/*.cld', union_by_name=true)) TO 's3://$BUCKET/clouds/runs/$cloud_key.parquet' (FORMAT parquet);"
-"$DDB" -c "$S3 SELECT count(*) AS archived_rows, count(DISTINCT date) AS dates FROM read_parquet('s3://$BUCKET/detections/**/data.parquet', hive_partitioning=true);"
-EOS
-)
-
 # web-map backend: anonymous public-read on every published prefix of the shared
 # datadesk store (see store.sh — s2's detections/clusters/coverage plus burnoff's
 # vnf/, firedamp's plumes/ and ch4id's features/) + CORS, so a browser can
@@ -361,9 +346,9 @@ publish(){
   local ak sk; read -r ak sk < <(s3creds)
   local aws_s3=(env AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_DEFAULT_REGION="$OS_REGION_NAME"
     aws --endpoint-url "https://s3.$OS_REGION_NAME.cloudferro.com" --no-cli-pager s3api)
-  say "Publishing s3://$BUCKET/{detections,clusters,vnf,plumes,features,mars-s2l,coverage.geojson} for web-map access (public-read + CORS)"
+  say "Publishing s3://$BUCKET/{observations,assets,detections,clusters,plumes,features,coverage.geojson} for web-map access (public-read + CORS)"
   "${aws_s3[@]}" put-bucket-cors --bucket "$BUCKET" --cors-configuration '{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"ExposeHeaders":["Content-Range","Content-Length","ETag","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
-  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*","arn:aws:s3:::'"$BUCKET"'/plumes/*","arn:aws:s3:::'"$BUCKET"'/features/*","arn:aws:s3:::'"$BUCKET"'/mars-s2l/*","arn:aws:s3:::'"$BUCKET"'/hypergas/*","arn:aws:s3:::'"$BUCKET"'/ch4id/*","arn:aws:s3:::'"$BUCKET"'/coverage.geojson"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
+  "${aws_s3[@]}" put-bucket-policy --bucket "$BUCKET" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::'"$BUCKET"'/observations/*","arn:aws:s3:::'"$BUCKET"'/assets/*","arn:aws:s3:::'"$BUCKET"'/detections/*","arn:aws:s3:::'"$BUCKET"'/clusters/*","arn:aws:s3:::'"$BUCKET"'/vnf/*","arn:aws:s3:::'"$BUCKET"'/plumes/*","arn:aws:s3:::'"$BUCKET"'/features/*","arn:aws:s3:::'"$BUCKET"'/ch4id/*","arn:aws:s3:::'"$BUCKET"'/coverage.geojson"]},{"Sid":"PublicListArchive","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$BUCKET"'"]}]}'
   echo "  public read + CORS applied. objects at https://s3.$OS_REGION_NAME.cloudferro.com/$BUCKET/{detections,clusters,coverage.geojson}…"
 }
 
@@ -380,31 +365,50 @@ cost(){ auth; costline || echo "no fleet $VM-*" >&2; }
 # delete every member VM + its floating IP, in parallel. costline first (best-effort).
 down(){
   auth; costline || true
-  local n i; n=$(fleetn)
-  for i in $(seq 0 $((n-1))); do down_member "$i" & done; wait
+  local n i; local -a pids=(); n=$(fleetn)
+  for i in $(seq 0 $((n-1))); do down_member "$i" & pids+=("$!"); done
+  wait_all "${pids[@]}"
   rm -f .box-ip-* .fleet
   printf '\n\033[1;32m✓ scaled to zero (%s members)\033[0m\n' "$n"
 }
 down_member(){
-  local i=$1 vm port fip=""; vm=$(mvm "$i")
+  local i=$1 vm port fip="" cached=""; vm=$(mvm "$i"); cached=$(cat ".box-ip-$i" 2>/dev/null || true)
+  if ! openstack server show "$vm" >/dev/null 2>&1; then
+    if [ -n "$cached" ]; then openstack floating ip delete "$cached" >/dev/null 2>&1 || true; fi
+    say "  [$i] no VM $vm"
+    return 0
+  fi
   port=$(openstack port list --server "$vm" --network "$NET" -f value -c id 2>/dev/null | head -1 || true)
   [ -n "$port" ] && fip=$(openstack floating ip list --port "$port" -f value -c "Floating IP Address" | head -1 || true)
-  openstack server delete "$vm" --wait >/dev/null 2>&1 && say "  [$i] $vm deleted" || say "  [$i] no VM $vm"
-  [ -n "$fip" ] && { openstack floating ip delete "$fip" >/dev/null 2>&1 || true; }
+  if ! openstack server delete "$vm" --wait >/dev/null 2>&1; then
+    echo "  [$i] failed to delete $vm; address metadata retained" >&2
+    return 1
+  fi
+  say "  [$i] $vm deleted"
+  if [ -n "$fip" ] && ! openstack floating ip delete "$fip" >/dev/null 2>&1; then
+    echo "  [$i] VM deleted but floating IP $fip remains; address metadata retained" >&2
+    return 1
+  fi
+  return 0
 }
 
-# prove a run is complete + clean per member before archive: (1) every AOI feature in
-# the shard has an OUT/<id>/ dir (header-only even when flareless → no subdir == never
-# scanned); (2) no leftover <mgrs>_<date>.err. nonzero if any gap/error; `all` gates the
-# teardown on it. (see cloud/README.md)
+# Prove a run is complete + clean per member before archive: the detector is stopped
+# after writing its success sentinel, every AOI has durable output, and no retryable
+# scene error remains. `all` gates archive and teardown on this check.
 verify(){
   local n i rc=0; n=$(fleetn)
   for i in $(seq 0 $((n-1))); do
     say "Verify $(mvm "$i")"
+    if mssh "$i" 'pgrep -x s2-flares >/dev/null'; then
+      echo "  detector still running"; rc=1; continue
+    fi
+    if ! mssh "$i" "grep -q '^done:' /tmp/cfrun.log"; then
+      echo "  detector stopped without a success sentinel"; rc=1; continue
+    fi
     mssh "$i" "cd $REPO_DIR && OUT='$OUT' python3 - <<'PY'
 import json,os,glob,sys
 out=os.environ['OUT']
-errs=sorted(glob.glob(os.path.join(out,'*','*.err'))) if os.path.isdir(out) else []
+errs=sorted(glob.glob(os.path.join(out,'**','*.err'), recursive=True)) if os.path.isdir(out) else []
 if not os.path.exists('_aoi.geojson'):
     print(f'  no _aoi.geojson (bbox/region run) — {len(errs)} errored scenes')
     for e in errs: print('    errored:',e)
@@ -415,7 +419,12 @@ def fid(i,f):
         if isinstance(p.get(k),str): return p[k]
     return str(i)
 ids=[fid(i,f) for i,f in enumerate(json.load(open('_aoi.geojson')).get('features',[]))]
-scanned={d for d in (os.listdir(out) if os.path.isdir(out) else []) if glob.glob(os.path.join(out,d,'*.csv'))}
+scanned=set()
+for path in glob.glob(os.path.join(out,'observations','**','*.geojson'), recursive=True):
+    try:
+        target=json.load(open(path)).get('analysis',{}).get('target',{}).get('id')
+        if target: scanned.add(target)
+    except Exception: pass
 gaps=[i for i in ids if i not in scanned]
 print(f'  {len(ids)-len(gaps)}/{len(ids)} shard features scanned, {len(gaps)} unscanned, {len(errs)} errored scenes')
 for g in gaps: print('    unscanned:',g)
@@ -431,7 +440,7 @@ launch(){ up; run "$@"; }
 
 # hands-off: up → run → verify → archive → pull → down. `down` fires only once verify
 # proves every AOI feature was scanned — a gap keeps the fleet up for a resumable re-run.
-all(){ up; run "$@"
+all(){ up; run "$@"; watch
   if verify; then archive; pull; down
   else say "verify found unscanned AOI features — fleet kept up. re-run (resumable), then ./box.sh archive && ./box.sh down"; fi; }
 
@@ -441,7 +450,7 @@ all(){ up; run "$@"
 
 case "${1:-}" in
   up) up;; image) image;; ip) ip;; ssh) shift; go_ssh "${1:-0}";; cost) cost;; down) down;;
-  run) shift; run "$@";; watch) watch;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; parity) parity;;
+  run) shift; run "$@";; watch) watch;; status) status;; pull) pull;; archive) archive;; verify) verify;; publish) publish;; parity) parity;;
   coverage) shift; coverage "${1:-}";; launch) shift; launch "$@";; all) shift; all "$@";;
-  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | pull | archive | coverage [aoi] | verify | publish | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
+  *) echo "usage: $0 {up | image | run <args> | launch <args> | watch | status | pull | archive | coverage [aoi] | verify | publish | parity | cost | down | all <args> | ssh [i] | ip}  (FLEET=N, default 4; GPU=1 → gpu box)" >&2; exit 1;;
 esac

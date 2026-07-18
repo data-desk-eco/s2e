@@ -4,9 +4,9 @@
 //! vision-validated quality score (score.rs, whose geometric min_glint keys off
 //! sun elevation). pure function, no global state, deterministic cluster `id`.
 
-use std::collections::HashMap;
 use crate::detect::Detection;
 use crate::score::{glint_score_from_elevation, glint_suspect, score_cluster};
+use std::collections::HashMap;
 
 const DEG_TO_RAD: f64 = std::f64::consts::PI / 180.0;
 const R_EARTH: f64 = 6371000.0;
@@ -25,10 +25,15 @@ fn cluster_hash(lat: f64, lon: f64) -> String {
 }
 
 fn to_base36(mut n: u32) -> String {
-    if n == 0 { return "0".into(); }
+    if n == 0 {
+        return "0".into();
+    }
     const D: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut out = Vec::new();
-    while n > 0 { out.push(D[(n % 36) as usize]); n /= 36; }
+    while n > 0 {
+        out.push(D[(n % 36) as usize]);
+        n /= 36;
+    }
     out.reverse();
     String::from_utf8(out).unwrap()
 }
@@ -43,7 +48,9 @@ fn fast_dist_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 fn is_seasonal<'a>(dates: impl Iterator<Item = &'a str>) -> bool {
     for d in dates {
         let m: i32 = d.get(5..7).and_then(|s| s.parse().ok()).unwrap_or(1) - 1;
-        if !(3..=7).contains(&m) { return false; }
+        if !(3..=7).contains(&m) {
+            return false;
+        }
     }
     true
 }
@@ -105,8 +112,17 @@ impl Cluster {
     /// matches the fresh-detect path — no second scoring implementation to drift.
     pub fn set_observations(&mut self, n_clear_obs: usize) {
         let n = n_clear_obs.max(self.date_count as usize);
-        self.persistence = if n > 0 { Some(self.date_count as f64 / n as f64) } else { None };
-        let sc = score_cluster(self.max_ratio, self.date_count as f64, n as f64, self.min_glint);
+        self.persistence = if n > 0 {
+            Some(self.date_count as f64 / n as f64)
+        } else {
+            None
+        };
+        let sc = score_cluster(
+            self.max_ratio,
+            self.date_count as f64,
+            n as f64,
+            self.min_glint,
+        );
         self.ratio_score = sc.ratio_score;
         self.persistence_score = sc.persistence_score;
         self.glint_penalty = sc.glint_penalty;
@@ -127,7 +143,13 @@ pub struct ClusterOptions {
 
 impl Default for ClusterOptions {
     fn default() -> Self {
-        ClusterOptions { merge_distance: 135.0, min_dates: 4, min_avg_b12: 0.85, observations: None, score_threshold: 0.0 }
+        ClusterOptions {
+            merge_distance: 135.0,
+            min_dates: 4,
+            min_avg_b12: 0.85,
+            observations: None,
+            score_threshold: 0.0,
+        }
     }
 }
 
@@ -188,10 +210,14 @@ fn glint_metrics(dets: &[DedupedDet]) -> (Option<f64>, Option<f64>, Option<bool>
     let mut have_sun = false;
     for d in dets {
         if let Some(b) = d.peak_b11 {
-            if b > 0.0 { ratios.push(d.max_b12 / b); }
+            if b > 0.0 {
+                ratios.push(d.max_b12 / b);
+            }
         }
         if let Some(e) = d.sun_elevation {
-            if e < min_sun { min_sun = e; }
+            if e < min_sun {
+                min_sun = e;
+            }
             have_sun = true;
         }
     }
@@ -200,7 +226,11 @@ fn glint_metrics(dets: &[DedupedDet]) -> (Option<f64>, Option<f64>, Option<bool>
     } else {
         ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mid = ratios.len() / 2;
-        Some(if ratios.len() % 2 == 0 { (ratios[mid - 1] + ratios[mid]) / 2.0 } else { ratios[mid] })
+        Some(if ratios.len() & 1 == 0 {
+            (ratios[mid - 1] + ratios[mid]) / 2.0
+        } else {
+            ratios[mid]
+        })
     };
     let min_sun_elevation = if have_sun { Some(min_sun) } else { None };
     let likely_glint = median.map(|m| m < GLINT_B12_B11_RATIO);
@@ -223,16 +253,24 @@ fn deduped_out(d: &Detection) -> DedupedDet {
 
 // median of a slice (0.0 when empty) — the cluster's representative radiance.
 fn median(xs: &[f64]) -> f64 {
-    if xs.is_empty() { return 0.0; }
+    if xs.is_empty() {
+        return 0.0;
+    }
     let mut v = xs.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let m = v.len() / 2;
-    if v.len() % 2 == 0 { (v[m - 1] + v[m]) / 2.0 } else { v[m] }
+    if v.len() & 1 == 0 {
+        (v[m - 1] + v[m]) / 2.0
+    } else {
+        v[m]
+    }
 }
 
 /// spatially cluster cross-date detections into persistent flare sites.
 pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Vec<Cluster> {
-    if detections.is_empty() { return Vec::new(); }
+    if detections.is_empty() {
+        return Vec::new();
+    }
     let cloud_free_count = opts.observations.unwrap_or(0);
     let has_obs = opts.observations.is_some();
 
@@ -240,10 +278,14 @@ pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Ve
     if opts.merge_distance == 0.0 {
         let mut clusters = Vec::new();
         for det in detections {
-            if det.max_b12 < opts.min_avg_b12 { continue; }
+            if det.max_b12 < opts.min_avg_b12 {
+                continue;
+            }
             let out = deduped_out(det);
             let sc = score_of(&[det], det.max_b12, cloud_free_count);
-            if opts.score_threshold > 0.0 && sc.total_score < opts.score_threshold { continue; }
+            if opts.score_threshold > 0.0 && sc.total_score < opts.score_threshold {
+                continue;
+            }
             let dets = vec![out];
             let (median, min_sun, likely) = glint_metrics(&dets);
             clusters.push(Cluster {
@@ -258,7 +300,11 @@ pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Ve
                 date_count: 1,
                 first_date: det.date.clone(),
                 last_date: det.date.clone(),
-                persistence: if cloud_free_count > 0 { Some(1.0 / cloud_free_count as f64) } else { None },
+                persistence: if cloud_free_count > 0 {
+                    Some(1.0 / cloud_free_count as f64)
+                } else {
+                    None
+                },
                 seasonal: is_seasonal(std::iter::once(det.date.as_str())),
                 median_b12_b11_ratio: median,
                 min_sun_elevation: min_sun,
@@ -324,7 +370,9 @@ pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Ve
             let d = sorted[si];
             match pos.get(d.date.as_str()) {
                 Some(&p) => {
-                    if d.max_b12 > sorted[order[p]].max_b12 { order[p] = si; }
+                    if d.max_b12 > sorted[order[p]].max_b12 {
+                        order[p] = si;
+                    }
                 }
                 None => {
                     pos.insert(d.date.as_str(), order.len());
@@ -333,15 +381,23 @@ pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Ve
             }
         }
         let deduped: Vec<&Detection> = order.iter().map(|&si| sorted[si]).collect();
-        if deduped.len() < opts.min_dates { continue; }
+        if deduped.len() < opts.min_dates {
+            continue;
+        }
 
         let avg_b12 = deduped.iter().map(|d| d.max_b12).sum::<f64>() / deduped.len() as f64;
-        if avg_b12 < opts.min_avg_b12 { continue; }
+        if avg_b12 < opts.min_avg_b12 {
+            continue;
+        }
         let radiance = median(&deduped.iter().map(|d| d.radiance).collect::<Vec<_>>());
 
         // anchor = highest b12 detection (first wins on tie).
         let mut anchor = deduped[0];
-        for d in &deduped { if d.max_b12 > anchor.max_b12 { anchor = d; } }
+        for d in &deduped {
+            if d.max_b12 > anchor.max_b12 {
+                anchor = d;
+            }
+        }
 
         let mut dates: Vec<&str> = deduped.iter().map(|d| d.date.as_str()).collect();
         dates.sort_unstable();
@@ -350,13 +406,19 @@ pub fn cluster_detections(detections: &[Detection], opts: &ClusterOptions) -> Ve
         let seasonal = is_seasonal(deduped.iter().map(|d| d.date.as_str()));
 
         let persistence = if has_obs {
-            if cloud_free_count > 0 { Some(deduped.len() as f64 / cloud_free_count as f64) } else { None }
+            if cloud_free_count > 0 {
+                Some(deduped.len() as f64 / cloud_free_count as f64)
+            } else {
+                None
+            }
         } else {
             None
         };
 
         let sc = score_of(&deduped, anchor.max_b12, cloud_free_count);
-        if opts.score_threshold > 0.0 && sc.total_score < opts.score_threshold { continue; }
+        if opts.score_threshold > 0.0 && sc.total_score < opts.score_threshold {
+            continue;
+        }
 
         let dets: Vec<DedupedDet> = deduped.iter().map(|d| deduped_out(d)).collect();
         let (median, min_sun, likely) = glint_metrics(&dets);
@@ -397,13 +459,23 @@ mod tests {
 
     fn det(date: &str, max_b12: f64, peak_b11: f64, sun: f64) -> Detection {
         Detection {
-            date: date.into(), max_b12, peak_b11: Some(peak_b11),
-            sun_elevation: Some(sun), sun_azimuth: Some(150.0), pixels: 1,
-            lon: -102.0, lat: 32.0, ..Default::default()
+            date: date.into(),
+            max_b12,
+            peak_b11: Some(peak_b11),
+            sun_elevation: Some(sun),
+            sun_azimuth: Some(150.0),
+            pixels: 1,
+            lon: -102.0,
+            lat: 32.0,
+            ..Default::default()
         }
     }
     fn opts() -> ClusterOptions {
-        ClusterOptions { min_dates: 4, min_avg_b12: 0.5, ..Default::default() }
+        ClusterOptions {
+            min_dates: 4,
+            min_avg_b12: 0.5,
+            ..Default::default()
+        }
     }
 
     // glint.test.mjs [1] — saturating glint
@@ -441,7 +513,14 @@ mod tests {
     fn legacy_null() {
         let dets: Vec<Detection> = ["2024-05-01", "2024-05-11", "2024-05-21", "2024-05-31"]
             .iter()
-            .map(|d| Detection { date: (*d).into(), max_b12: 1.0, pixels: 1, lon: -102.0, lat: 32.0, ..Default::default() })
+            .map(|d| Detection {
+                date: (*d).into(),
+                max_b12: 1.0,
+                pixels: 1,
+                lon: -102.0,
+                lat: 32.0,
+                ..Default::default()
+            })
             .collect();
         let c = &cluster_detections(&dets, &opts())[0];
         assert_eq!(c.median_b12_b11_ratio, None);
@@ -454,12 +533,18 @@ mod tests {
     fn borderline() {
         let mk = |b11: f64| -> Vec<Detection> {
             ["2024-05-15", "2024-06-15", "2024-07-15", "2024-08-15"]
-                .iter().enumerate()
-                .map(|(_, d)| det(d, 1.0, b11, 65.0))
+                .iter()
+                .map(|d| det(d, 1.0, b11, 65.0))
                 .collect()
         };
-        assert_eq!(cluster_detections(&mk(0.78), &opts())[0].likely_glint, Some(false));
-        assert_eq!(cluster_detections(&mk(0.83), &opts())[0].likely_glint, Some(true));
+        assert_eq!(
+            cluster_detections(&mk(0.78), &opts())[0].likely_glint,
+            Some(false)
+        );
+        assert_eq!(
+            cluster_detections(&mk(0.83), &opts())[0].likely_glint,
+            Some(true)
+        );
     }
 
     // score.test.mjs [7] — score components attached
@@ -473,7 +558,12 @@ mod tests {
                 dets.push(x);
             }
         }
-        let o = ClusterOptions { min_dates: 4, min_avg_b12: 0.5, observations: Some(12), ..Default::default() };
+        let o = ClusterOptions {
+            min_dates: 4,
+            min_avg_b12: 0.5,
+            observations: Some(12),
+            ..Default::default()
+        };
         let c = &cluster_detections(&dets, &o)[0];
         assert_eq!(c.ratio_score, 1.0);
         assert!((c.persistence_score - 1.0).abs() < 1e-9);
@@ -520,7 +610,12 @@ mod tests {
                 dets.push(x);
             }
         }
-        let gated = ClusterOptions { min_dates: 4, min_avg_b12: 0.5, score_threshold: 0.5, ..Default::default() };
+        let gated = ClusterOptions {
+            min_dates: 4,
+            min_avg_b12: 0.5,
+            score_threshold: 0.5,
+            ..Default::default()
+        };
         assert_eq!(cluster_detections(&dets, &gated).len(), 0);
         assert_eq!(cluster_detections(&dets, &opts()).len(), 1);
     }

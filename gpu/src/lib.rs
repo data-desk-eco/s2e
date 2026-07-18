@@ -8,8 +8,14 @@
 use std::os::raw::{c_int, c_uchar, c_ushort};
 
 extern "C" {
-    fn s2g_decode_batch(data: *const *const c_uchar, len: *const usize, n: c_int,
-        out: *mut *mut c_ushort, w: *mut c_int, h: *mut c_int) -> c_int;
+    fn s2g_decode_batch(
+        data: *const *const c_uchar,
+        len: *const usize,
+        n: c_int,
+        out: *mut *mut c_ushort,
+        w: *mut c_int,
+        h: *mut c_int,
+    ) -> c_int;
     fn s2g_free(p: *mut c_ushort);
 }
 
@@ -22,12 +28,23 @@ pub fn decode_batch(streams: &[&[u8]]) -> Result<Vec<(Vec<u16>, usize, usize)>, 
     let mut out = vec![std::ptr::null_mut::<c_ushort>(); n];
     let (mut w, mut h) = (vec![0 as c_int; n], vec![0 as c_int; n]);
     let rc = unsafe {
-        s2g_decode_batch(ptrs.as_ptr(), lens.as_ptr(), n as c_int, out.as_mut_ptr(), w.as_mut_ptr(), h.as_mut_ptr())
+        s2g_decode_batch(
+            ptrs.as_ptr(),
+            lens.as_ptr(),
+            n as c_int,
+            out.as_mut_ptr(),
+            w.as_mut_ptr(),
+            h.as_mut_ptr(),
+        )
     };
-    if rc != 0 { return Err(format!("nvjpeg2000 batch decode failed (rc={rc})")); }
+    if rc != 0 {
+        return Err(format!("nvjpeg2000 batch decode failed (rc={rc})"));
+    }
     let mut res = Vec::with_capacity(n);
     for i in 0..n {
-        if out[i].is_null() { return Err("nvjpeg2000 null output".into()); }
+        if out[i].is_null() {
+            return Err("nvjpeg2000 null output".into());
+        }
         let cnt = w[i] as usize * h[i] as usize;
         let pixels = unsafe { std::slice::from_raw_parts(out[i], cnt) }.to_vec();
         unsafe { s2g_free(out[i]) };

@@ -2,8 +2,8 @@
 # box setup: rust toolchain + gdal + duckdb, clone s2-flares, build the native cli.
 # the cli reads the in-region eodata S3 (free JP2 reads from inside WAW3-2) via gdal
 # /vsis3 with per-VM creds from the metadata service — `s2-flares detect --source
-# cdse …` needs no other secrets. duckdb stays for the archive step. (no node: the
-# detector is now the rust core compiled native, not node + geotiff/gdal-async.)
+# cdse-l1c …` needs no other secrets. DuckDB and awscli are archive-only; detection
+# is one native Rust binary with no Python environment.
 #
 # EVERY heavy step is GUARDED by a presence check, so this one file serves two boots:
 #   - stock Ubuntu (cold): nothing present → full apt/rust/duckdb/clone/build (~5-8min).
@@ -19,12 +19,10 @@ runcmd:
   - command -v duckdb >/dev/null || { su - eouser -c 'curl -fsSL https://install.duckdb.org | bash'; ln -sf /home/eouser/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb; }
   # rust toolchain (eouser)
   - test -f /home/eouser/.cargo/env || su - eouser -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
-  # python payloads (mars-s2l, hypergas — see cloud/emissions.sh): uv + cv2 runtime
-  # libs + awscli (plume-asset sync in the archive merges)
-  - dpkg -s libxcb1 libgl1 libglib2.0-0 awscli cron >/dev/null 2>&1 || { export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y libxcb1 libgl1 libglib2.0-0 awscli cron; }
-  - test -x /home/eouser/.local/bin/uv || su - eouser -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
-  # clone + build the native cli. start_member git-pulls + incrementally rebuilds for
-  # freshness, so this just needs a working tree + binary to EXIST (the readiness gate);
+  # awscli is used only to publish positive plume rasters.
+  - dpkg -s awscli >/dev/null 2>&1 || { export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y awscli; }
+  # clone + build the native cli. start_member rsyncs the invoking working tree and
+  # incrementally rebuilds, so this just needs a tree + binary for the readiness gate;
   # a golden boot already has both → both steps skip.
   - test -d /home/eouser/s2-flares || su - eouser -c 'git clone https://github.com/data-desk-eco/s2-flares.git s2-flares'
   - test -x /home/eouser/s2-flares/target/release/s2-flares || su - eouser -c 'cd s2-flares && . $HOME/.cargo/env && cargo build --release -p s2-flares-cli'

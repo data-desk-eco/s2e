@@ -1,0 +1,5 @@
+# curated plume validity. each line is a prefix of `target:date:plume-N`;
+# detected plumes matching no line are marked invalid in the plumes view.
+# canonical GeoJSON records are never touched by curation.
+pipeline-barrow:2026-03-14:plume-1
+aoi:2024-10-25:plume-1

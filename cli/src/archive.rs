@@ -133,6 +133,22 @@ fn flare_source(root: &str) -> String {
     )
 }
 
+/// curated validity: a detected plume is valid iff its `target:date:plume` key
+/// starts with an entry of data/valid-plumes.txt; all others are invalid.
+fn plume_validity() -> String {
+    let clauses: Vec<String> = include_str!("../../data/valid-plumes.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| format!("concat(target_id,':',date,':',id) LIKE '{}%'", quote(l)))
+        .collect();
+    if clauses.is_empty() {
+        "FALSE".into()
+    } else {
+        format!("({})", clauses.join(" OR "))
+    }
+}
+
 fn duckdb_lines(sql: &str) -> Result<Vec<String>, String> {
     let output = Command::new("duckdb")
         .args(["-csv", "-noheader", "-c", sql])
@@ -206,6 +222,7 @@ pub fn derive_views(root: &str) -> Result<(), String> {
 
     let plume_glob = quote(&join(root, "observations/**/plumes-*.geojson"));
     let plume_output = join(root, "plumes/results.parquet");
+    let validity = plume_validity();
     if has(&join(root, "observations/**/plumes-*.geojson"))? {
         local_parent(&plume_output)?;
         view::duckdb(&format!(
@@ -243,6 +260,7 @@ pub fn derive_views(root: &str) -> Result<(), String> {
                json_extract(feature,'$.properties.flux_rate_kg_h')::DOUBLE AS flux_rate_kg_h, \
                json_extract(feature,'$.properties.flux_rate_std_kg_h')::DOUBLE AS flux_rate_std_kg_h, \
                json_extract(feature,'$.properties.max_probability')::DOUBLE AS max_probability, \
+               CASE WHEN feature IS NULL THEN NULL ELSE {validity} END AS valid, \
                json_extract(feature,'$.geometry')::VARCHAR AS geometry, \
                json_extract(analysis,'$.area.processed')::VARCHAR AS footprint, \
                json_extract_string(analysis,'$.assets.probability') AS probability_asset, \

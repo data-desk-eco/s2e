@@ -18,8 +18,8 @@ hooks.
 
 `FLEET=N` controls AOI sharding (default four); bbox runs use one member. The
 working tree is rsynced, built incrementally and launched as a detached resumable
-job. `emissions.sh` remains only as a catalogue-to-AOI helper and compatibility
-spelling for the same `box.sh` workflow.
+job. `box.sh aoi QUERY` turns the shared infrastructure catalogue into a
+detector AOI FeatureCollection.
 
 ## Persistence and archive
 

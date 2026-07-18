@@ -58,6 +58,11 @@ pub struct PlumeDetection {
     pub pixels: usize,
     pub flux_rate: f64,
     pub flux_rate_std: f64,
+    pub max_probability: f32,
+    /// excess-probability-weighted centroid (lon, lat): weights of p − threshold
+    /// discount the faint downwind tail, so the point lands on the visible core
+    /// rather than an envelope midpoint the tail would drag downwind.
+    pub centre: [f64; 2],
     pub mask: Vec<u8>,
 }
 
@@ -370,17 +375,33 @@ impl<'a> PlumeDetector<'a> {
             let enhancement =
                 s2_flares_core::plume::methane_enhancement(&ratio, satellite, sza, vza, &lut)?;
             let speed = (wind[0] as f64).hypot(wind[1] as f64);
+            let (zone, north) = s2_flares_core::utm_params(target_chip.epsg);
             for component in components {
                 let mut component_mask = vec![0u8; mask.len()];
+                let (mut sx, mut sy, mut sp, mut max_probability) = (0.0, 0.0, 0.0, 0f32);
                 for &i in &component {
                     component_mask[i] = 1;
+                    max_probability = max_probability.max(probability[i]);
+                    // strictly positive: component pixels are strictly above threshold
+                    let w = (probability[i] - s2_flares_core::plume::DEFAULT_THRESHOLD) as f64;
+                    sx += w * ((i % target_chip.width) as f64 + 0.5);
+                    sy += w * ((i / target_chip.width) as f64 + 0.5);
+                    sp += w;
                 }
                 let (flux_rate, flux_rate_std) =
                     s2_flares_core::plume::flux_rate(&enhancement, &component_mask, speed)?;
+                let (lon, lat) = s2_flares_core::utm_to_wgs84(
+                    target_chip.min_x + 10.0 * sx / sp,
+                    target_chip.max_y - 10.0 * sy / sp,
+                    zone,
+                    north,
+                );
                 result.plumes.push(PlumeDetection {
                     pixels: component.len(),
                     flux_rate,
                     flux_rate_std,
+                    max_probability,
+                    centre: [lon, lat],
                     mask: component_mask,
                 });
             }
@@ -559,6 +580,8 @@ mod tests {
                 pixels: 1,
                 flux_rate: 0.0,
                 flux_rate_std: 0.0,
+                max_probability: 1.0,
+                centre: [0.0, 0.0],
                 mask: vec![0, 0, 0, 1],
             }],
             probability: Some(vec![0.0, 0.25, 0.5, 1.0]),

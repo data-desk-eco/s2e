@@ -120,10 +120,14 @@ fn flare_source(root: &str) -> String {
            json_extract(feature,'$.properties.pixels')::UINTEGER AS pixels, \
            json_extract(feature,'$.properties.radiance')::DOUBLE AS radiance, \
            json_extract(feature,'$.properties.saturated')::UTINYINT AS saturated, \
-           json_extract(feature,'$.properties.sun_elevation')::DOUBLE AS sun_elevation, \
-           json_extract(feature,'$.properties.sun_azimuth')::DOUBLE AS sun_azimuth, \
-           json_extract(feature,'$.properties.glint_angle')::DOUBLE AS glint_angle, \
-           json_extract(feature,'$.properties.glint_score')::DOUBLE AS glint_score, \
+           COALESCE(json_extract(analysis,'$.scene.sun_elevation'), \
+             json_extract(feature,'$.properties.sun_elevation'))::DOUBLE AS sun_elevation, \
+           COALESCE(json_extract(analysis,'$.scene.sun_azimuth'), \
+             json_extract(feature,'$.properties.sun_azimuth'))::DOUBLE AS sun_azimuth, \
+           COALESCE(json_extract(analysis,'$.glint_angle'), \
+             json_extract(feature,'$.properties.glint_angle'))::DOUBLE AS glint_angle, \
+           COALESCE(json_extract(analysis,'$.glint_score'), \
+             json_extract(feature,'$.properties.glint_score'))::DOUBLE AS glint_score, \
            json_extract_string(analysis,'$.method.fingerprint') AS method \
          FROM flat"
     )
@@ -192,7 +196,8 @@ pub fn derive_views(root: &str) -> Result<(), String> {
                flat AS (SELECT analysis, unnest(features) feature FROM records) \
              SELECT json_extract(feature,'$.geometry.coordinates[0]')::DOUBLE AS glon, \
                json_extract(feature,'$.geometry.coordinates[1]')::DOUBLE AS glat, \
-               json_extract_string(feature,'$.properties.date') AS date, \
+               COALESCE(json_extract_string(analysis,'$.scene.date'), \
+                 json_extract_string(feature,'$.properties.date')) AS date, \
                json_extract(feature,'$.properties.cloud_fraction')::DOUBLE AS cloud_frac, \
                json_extract_string(analysis,'$.method.fingerprint') AS method FROM flat) \
              TO '{}' (FORMAT PARQUET, COMPRESSION ZSTD)", quote(&cloud_output)
@@ -207,14 +212,16 @@ pub fn derive_views(root: &str) -> Result<(), String> {
             "{prelude}COPY (WITH records AS (SELECT * FROM read_json('{plume_glob}', columns={{'analysis':'JSON','features':'JSON[]'}})) \
              SELECT json_extract_string(analysis,'$.target.id') AS target_id, \
                json_extract_string(analysis,'$.target.name') AS target_name, \
-               COALESCE(CASE json_extract_string(feature,'$.geometry.type') \
+               COALESCE(TRY_CAST(json_extract(feature,'$.properties.centre[0]') AS DOUBLE), \
+                 CASE json_extract_string(feature,'$.geometry.type') \
                  WHEN 'Point' THEN TRY_CAST(json_extract(feature,'$.geometry.coordinates[0]') AS DOUBLE) \
                  WHEN 'Polygon' THEN (json_extract(feature,'$.geometry.coordinates[0][0][0]')::DOUBLE + \
                    json_extract(feature,'$.geometry.coordinates[0][2][0]')::DOUBLE) / 2 END, \
                  TRY_CAST(json_extract(analysis,'$.target.geometry.coordinates[0]') AS DOUBLE), \
                  (json_extract(analysis,'$.area.requested.coordinates[0][0][0]')::DOUBLE + \
                   json_extract(analysis,'$.area.requested.coordinates[0][2][0]')::DOUBLE) / 2) AS lon, \
-               COALESCE(CASE json_extract_string(feature,'$.geometry.type') \
+               COALESCE(TRY_CAST(json_extract(feature,'$.properties.centre[1]') AS DOUBLE), \
+                 CASE json_extract_string(feature,'$.geometry.type') \
                  WHEN 'Point' THEN TRY_CAST(json_extract(feature,'$.geometry.coordinates[1]') AS DOUBLE) \
                  WHEN 'Polygon' THEN (json_extract(feature,'$.geometry.coordinates[0][0][1]')::DOUBLE + \
                    json_extract(feature,'$.geometry.coordinates[0][2][1]')::DOUBLE) / 2 END, \
@@ -235,6 +242,7 @@ pub fn derive_views(root: &str) -> Result<(), String> {
                json_extract(feature,'$.properties.pixels')::UINTEGER AS pixels, \
                json_extract(feature,'$.properties.flux_rate_kg_h')::DOUBLE AS flux_rate_kg_h, \
                json_extract(feature,'$.properties.flux_rate_std_kg_h')::DOUBLE AS flux_rate_std_kg_h, \
+               json_extract(feature,'$.properties.max_probability')::DOUBLE AS max_probability, \
                json_extract(feature,'$.geometry')::VARCHAR AS geometry, \
                json_extract(analysis,'$.area.processed')::VARCHAR AS footprint, \
                json_extract_string(analysis,'$.assets.probability') AS probability_asset, \

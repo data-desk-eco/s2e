@@ -109,7 +109,21 @@ fn flare_features(detections: &[Detection]) -> Vec<Value> {
         .map(|d| {
             let mut properties = serde_json::to_value(d).unwrap_or(Value::Null);
             if let Some(map) = properties.as_object_mut() {
-                for key in ["lon", "lat", "peak_img_row", "peak_img_col"] {
+                // positional/bookkeeping fields plus scene-level constants: the
+                // latter live once on the analysis, not on every feature.
+                for key in [
+                    "lon",
+                    "lat",
+                    "peak_img_row",
+                    "peak_img_col",
+                    "date",
+                    "mgrs",
+                    "scene",
+                    "sun_elevation",
+                    "sun_azimuth",
+                    "glint_angle",
+                    "glint_score",
+                ] {
                     map.remove(key);
                 }
             }
@@ -121,7 +135,16 @@ fn flare_features(detections: &[Detection]) -> Vec<Value> {
         .collect()
 }
 
-fn cloud_features(cells: &[(String, f64)], date: &str) -> Vec<Value> {
+/// scene-level glint terms on the flare analysis (formerly duplicated per feature).
+fn flare_glint(analysis: &mut Value, item: &stac::Item) {
+    if let Some(elevation) = item.sun_elevation {
+        let angle = s2_flares_core::score::glint_angle_nadir(elevation);
+        analysis["glint_angle"] = json!(angle);
+        analysis["glint_score"] = json!(s2_flares_core::score::glint_score_from_angle(angle));
+    }
+}
+
+fn cloud_features(cells: &[(String, f64)]) -> Vec<Value> {
     cells
         .iter()
         .filter_map(|(key, cloud_fraction)| {
@@ -129,7 +152,7 @@ fn cloud_features(cells: &[(String, f64)], date: &str) -> Vec<Value> {
             let (lon, lat) = (xy.next()?, xy.next()?);
             Some(record::feature(
                 json!({"type":"Point","coordinates":[lon,lat]}),
-                json!({"date":date,"cloud_fraction":cloud_fraction}),
+                json!({"cloud_fraction":cloud_fraction}),
             ))
         })
         .collect()
@@ -147,7 +170,9 @@ fn plume_features(chip: &plume::Chip, result: &plume::PlumeResult) -> Vec<Value>
                     "id": format!("plume-{}", index + 1),
                     "pixels": detection.pixels,
                     "flux_rate_kg_h": detection.flux_rate,
-                    "flux_rate_std_kg_h": detection.flux_rate_std
+                    "flux_rate_std_kg_h": detection.flux_rate_std,
+                    "max_probability": detection.max_probability,
+                    "centre": detection.centre
                 }),
             )
         })
@@ -203,7 +228,7 @@ fn write_clouds(
             item,
             "clouds",
             cloud.method,
-            record::collection(analysis, cloud_features(cloud.cells, &item.date)),
+            record::collection(analysis, cloud_features(cloud.cells)),
         )?;
     }
     Ok(record_path)
@@ -369,6 +394,7 @@ pub fn run_targeted(
                         "ok",
                     );
                     analysis["cloud_analysis"] = cloud_ref.clone().into();
+                    flare_glint(&mut analysis, item);
                     match commit(
                         root,
                         aoi,
@@ -572,6 +598,7 @@ pub fn run_flares(c: &Common, out: &str, pool: &rayon::ThreadPool) {
                         "ok",
                     );
                     analysis["cloud_analysis"] = relative_record_name(&cloud_path).into();
+                    flare_glint(&mut analysis, item);
                     match commit(
                         root,
                         aoi,

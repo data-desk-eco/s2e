@@ -6,7 +6,9 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA: &str = "s2-emissions/analysis/v1";
+// v2: scene-level constants (sun geometry, glint, date) live once on the
+// analysis; features carry only per-detection values.
+pub const SCHEMA: &str = "s2-emissions/analysis/v2";
 
 pub fn bbox_geometry([w, s, e, n]: [f64; 4]) -> Value {
     json!({
@@ -100,6 +102,8 @@ pub fn scene(item: &crate::stac::Item, source: &str) -> Value {
         "satellite": item.id.get(..3).unwrap_or(""),
         "level": item.level,
         "source": source,
+        "sun_elevation": item.sun_elevation,
+        "sun_azimuth": item.sun_azimuth,
         "epsg": item.epsg,
         "footprint": bbox_geometry(item.bbox)
     })

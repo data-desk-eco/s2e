@@ -2,7 +2,7 @@
 name = "s2-flares-cli"
 version.workspace = true
 edition.workspace = true
-description = "Sentinel-2 SWIR gas-flare detection — quick AOI runs and bulk archiving"
+description = "Native Sentinel-2 flare and methane-plume detection"
 
 [[bin]]
 name = "s2-flares"
@@ -12,13 +12,17 @@ path = "src/main.rs"
 s2-flares-core = { path = "../core", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 gdal = { version = "0.17", features = ["bindgen"] }
+gdal-sys = "0.10"
 ureq = { version = "2", features = ["json"] }
 serde_json = "1"
 rayon = "1"
+candle-core = "0.11"
+candle-nn = "0.11"
+sha2 = "0.10"
+chrono = "0.4"
 # gpu path only — the CUDA shim crate + raw /vsis3 byte read (VSIF*). off by default
 # so the cpu and wasm builds stay CUDA-free (cli/wasm builds never pull either dep).
 s2-flares-gpu = { path = "../gpu", optional = true }
-gdal-sys = { version = "0.10", optional = true }
 
 [features]
-gpu = ["dep:s2-flares-gpu", "dep:gdal-sys"]
+gpu = ["dep:s2-flares-gpu"]

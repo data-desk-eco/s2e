@@ -1,0 +1,51 @@
+{
+  "type": "FeatureCollection",
+  "name": "UK gas import and offshore-pipeline landing terminals",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"id": "lng-dragon", "name": "Dragon LNG Terminal", "kind": "lng_terminal", "status": "operating", "source_id": "GEM:G100001055227"},
+      "geometry": {"type": "Point", "coordinates": [-4.99774, 51.70453]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "lng-south-hook", "name": "South Hook LNG Terminal", "kind": "lng_terminal", "status": "operating", "source_id": "GEM:G100002055700"},
+      "geometry": {"type": "Point", "coordinates": [-5.07627, 51.71520]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "lng-grain", "name": "Grain LNG Terminal", "kind": "lng_terminal", "status": "operating", "source_id": "GEM:G100002055300"},
+      "geometry": {"type": "Point", "coordinates": [0.67987, 51.45107]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "pipeline-bacton", "name": "Bacton Gas Terminal", "kind": "pipeline_landing", "status": "operating", "source_id": "OGIM:6568257"},
+      "geometry": {"type": "Point", "coordinates": [1.45732, 52.85702]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "pipeline-easington", "name": "Easington Gas Terminal", "kind": "pipeline_landing", "status": "operating", "source_id": "MPS:mps_mapping_terminal.00d42ce3-2d5d-4fff-a197-59e9f0c58ded"},
+      "geometry": {"type": "Point", "coordinates": [0.11728, 53.65705]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "pipeline-st-fergus", "name": "St Fergus Gas Terminal", "kind": "pipeline_landing", "status": "operating", "source_id": "OGIM:6568270"},
+      "geometry": {"type": "Point", "coordinates": [-1.83798, 57.57614]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "pipeline-teesside", "name": "Teesside Gas Processing", "kind": "pipeline_landing", "status": "operating", "source_id": "MPS:mps_mapping_terminal.edd92a83-9ddf-429e-a207-2f031cd58dc2"},
+      "geometry": {"type": "Point", "coordinates": [-1.19410, 54.61083]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "pipeline-barrow", "name": "Barrow-in-Furness Gas Terminal", "kind": "pipeline_landing", "status": "operating", "source_id": "OGIM:6568258"},
+      "geometry": {"type": "Point", "coordinates": [-3.18282, 54.09239]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "pipeline-theddlethorpe", "name": "Theddlethorpe Gas Terminal", "kind": "pipeline_landing", "status": "legacy", "source_id": "OGIM:6568274"},
+      "geometry": {"type": "Point", "coordinates": [0.23466, 53.36075]}
+    }
+  ]
+}

@@ -5,7 +5,7 @@
 # only the toolkit (nvcc/cudart/headers) and the nvjpeg2000 redistributable on top.
 # everything else (eodata per-VM creds, duckdb for archive) is identical to the cpu box.
 package_update: true
-packages: [git, gdal-bin, libgdal-dev, clang, libclang-dev, pkg-config, build-essential, ca-certificates, curl, unzip, python3, jq]
+packages: [git, gdal-bin, libgdal-dev, clang, libclang-dev, pkg-config, build-essential, ca-certificates, curl, unzip, python3, jq, awscli]
 runcmd:
   - su - eouser -c 'curl -fsSL https://install.duckdb.org | bash'
   - ln -sf /home/eouser/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb

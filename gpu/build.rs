@@ -6,11 +6,17 @@
 fn main() {
     let cuda = std::env::var("CUDA_PATH").unwrap_or_else(|_| "/usr/local/cuda".into());
     // ubuntu/debian put nvjpeg2000 in a versioned multiarch dir, not in CUDA's tree.
-    let j_inc = std::env::var("NVJPEG2K_INCLUDE").unwrap_or_else(|_| "/usr/include/libnvjpeg2k/12".into());
-    let j_lib = std::env::var("NVJPEG2K_LIB").unwrap_or_else(|_| "/usr/lib/x86_64-linux-gnu/libnvjpeg2k/12".into());
+    let j_inc =
+        std::env::var("NVJPEG2K_INCLUDE").unwrap_or_else(|_| "/usr/include/libnvjpeg2k/12".into());
+    let j_lib = std::env::var("NVJPEG2K_LIB")
+        .unwrap_or_else(|_| "/usr/lib/x86_64-linux-gnu/libnvjpeg2k/12".into());
 
-    cc::Build::new().cuda(true).file("src/shim.cu")
-        .include(format!("{cuda}/include")).include(&j_inc).compile("s2gpu");
+    cc::Build::new()
+        .cuda(true)
+        .file("src/shim.cu")
+        .include(format!("{cuda}/include"))
+        .include(&j_inc)
+        .compile("s2gpu");
 
     // link-search/link-lib propagate from this build script to the final binary's link;
     // runtime resolution of libcudart/libnvjpeg2k.so.0 (dirs not on the default ld path)

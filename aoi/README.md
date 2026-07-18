@@ -11,6 +11,12 @@ Each dataset is two files kept side by side: the raw vendor source, and a small
 quirks (filtering, dedup, geometry) so the CLI stays generic. A `.sh` builds the
 AOIs and kicks off the run; the built `.geojson` is what ships to the box.
 
+For most targeting you no longer need a curated file here at all:
+`cloud/emissions.sh aoi` builds a standard AOI geojson straight from the ch4id
+features catalogue on the store — by `k=v` filters (`kind=lng_terminal,
+status=operating,dataset=gem`) or by any provider's feature ids
+(`GEM:…`, `OGIM:…`, `OSM:…`, `MPS:…`).
+
 ## What's here
 
 | AOI | scope | used for |

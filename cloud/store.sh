@@ -9,6 +9,8 @@
 #   vnf/data.parquet                 burnoff    (public)
 #   plumes/data.parquet              firedamp   (public)
 #   features/data.fgb                ch4id      (public)
+#   ch4id/…                          ch4id      (public: plumes/attributions state)
+#   mars-s2l/…                       s2-flares  (public: native results + rasters)
 #
 # bucket-level config (public-read policy + cors) is owned here: box.sh publish.
 : "${STORE_REGION:=WAW3-2}"

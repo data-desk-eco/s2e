@@ -23,13 +23,21 @@ pub const GLINT_RATIO_SUSPECT: f64 = 1.3;
 
 /// angle between the specularly-reflected sun direction and a nadir view (s2 view
 /// zenith ≤ 10° ⇒ treat as nadir ⇒ sun zenith = 90 − elevation).
-pub fn glint_angle_nadir(sun_elevation_deg: f64) -> f64 { 90.0 - sun_elevation_deg }
+pub fn glint_angle_nadir(sun_elevation_deg: f64) -> f64 {
+    90.0 - sun_elevation_deg
+}
 
 /// map a glint angle to a 0–1 score (1 = high glint risk): 1.0 below 25°, fading
 /// linearly to 0 at 65°.
 pub fn glint_score_from_angle(glint_angle_deg: f64) -> f64 {
     let a = glint_angle_deg;
-    if a <= 25.0 { 1.0 } else if a >= 65.0 { 0.0 } else { (65.0 - a) / 40.0 }
+    if a <= 25.0 {
+        1.0
+    } else if a >= 65.0 {
+        0.0
+    } else {
+        (65.0 - a) / 40.0
+    }
 }
 
 /// glint_score straight from sun elevation (None when elevation is unknown).
@@ -50,7 +58,11 @@ pub fn ratio_score(max_ratio: Option<f64>) -> f64 {
 
 /// persistence score in [0, 1]: the clear-sky share lit, n_dates / n_obs.
 pub fn persistence_score(n_dates: f64, n_obs: f64) -> f64 {
-    if n_obs <= 0.0 { 0.0 } else { (n_dates / n_obs).min(1.0) }
+    if n_obs <= 0.0 {
+        0.0
+    } else {
+        (n_dates / n_obs).min(1.0)
+    }
 }
 
 /// geometric glint penalty in [−W_GLINT, 0], linear in the cluster's minimum
@@ -59,7 +71,11 @@ pub fn glint_penalty(min_glint: Option<f64>) -> f64 {
     match min_glint {
         Some(g) if !g.is_nan() => {
             let v = -W_GLINT * g.clamp(0.0, 1.0);
-            if v == 0.0 { 0.0 } else { v }
+            if v == 0.0 {
+                0.0
+            } else {
+                v
+            }
         }
         _ => 0.0,
     }
@@ -86,26 +102,41 @@ pub struct Score {
 }
 
 /// score one cluster from its intrinsic aggregates.
-pub fn score_cluster(max_ratio: Option<f64>, n_dates: f64, n_obs: f64, min_glint: Option<f64>) -> Score {
+pub fn score_cluster(
+    max_ratio: Option<f64>,
+    n_dates: f64,
+    n_obs: f64,
+    min_glint: Option<f64>,
+) -> Score {
     let ratio_score = ratio_score(max_ratio);
     let persistence_score = persistence_score(n_dates, n_obs);
     let glint_penalty = glint_penalty(min_glint);
     let total_score = W_RATIO * ratio_score
         + W_PERSIST * persistence_score * (PERSIST_FLOOR + (1.0 - PERSIST_FLOOR) * ratio_score)
         + glint_penalty;
-    Score { ratio_score, persistence_score, glint_penalty, total_score }
+    Score {
+        ratio_score,
+        persistence_score,
+        glint_penalty,
+        total_score,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn approx(a: f64, b: f64) -> bool { (a - b).abs() < 1e-9 }
+    fn approx(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
 
     #[test]
     fn ratio_ramp() {
         assert_eq!(ratio_score(Some(RATIO_FLOOR)), 0.0);
         assert_eq!(ratio_score(Some(0.5)), 0.0);
-        assert!(approx(ratio_score(Some(RATIO_FLOOR + RATIO_SPAN / 2.0)), 0.5));
+        assert!(approx(
+            ratio_score(Some(RATIO_FLOOR + RATIO_SPAN / 2.0)),
+            0.5
+        ));
         assert!(approx(ratio_score(Some(RATIO_FLOOR + RATIO_SPAN)), 1.0));
         assert_eq!(ratio_score(Some(3.0)), 1.0);
         assert_eq!(ratio_score(None), 0.0);

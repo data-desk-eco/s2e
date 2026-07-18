@@ -65,7 +65,7 @@ Retrying the same method replaces the same deterministic path; a method change
 creates a new record.
 
 GeoJSON records and assets are authoritative. `views` creates disposable Parquet
-indexes (`detections/`, `clouds/`, `retrievals/`); `cluster` creates another derived
+indexes (`views/detections/`, `ops/clouds/`, `views/retrievals/`); `cluster` creates another derived
 view. They may always be deleted and rebuilt from `observations/`.
 
 ## Methodology invariants

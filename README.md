@@ -80,7 +80,7 @@ idempotently commits the same path. Combined runs share computation in memory bu
 retain this clean persistence boundary.
 
 `archive` copies GeoJSON and raster assets unchanged. `views` uses DuckDB to
-rebuild `detections/`, `clouds/` and `retrievals/data.parquet` as disposable query
+rebuild `views/detections/`, `ops/clouds/` and `views/retrievals/` as disposable query
 indexes. `clusters/` is likewise derived; none of the Parquet products is another
 authoritative detection format.
 

@@ -422,35 +422,40 @@ pub fn run_targeted(
                 );
                 match result {
                     Ok((plume_chip, result)) => {
-                        let probability =
-                            if result.is_plume() {
-                                let asset = root.join("assets").join(&aoi.key).join(&item.id).join(
-                                    format!(
-                                        "plumes-{}.tif",
+                        // both pixel assets commit before the referencing record
+                        let assets = if result.is_plume() {
+                            let stem =
+                                root.join("assets")
+                                    .join(&aoi.key)
+                                    .join(&item.id)
+                                    .join(format!(
+                                        "plumes-{}",
                                         plume_method["fingerprint"].as_str().unwrap()
-                                    ),
-                                );
-                                match plume::save_probability(&asset, &plume_chip, &result) {
-                                    Ok(()) => Some(
-                                        asset
-                                            .strip_prefix(root)
-                                            .unwrap()
-                                            .to_string_lossy()
-                                            .into_owned(),
-                                    ),
-                                    Err(e) => {
-                                        counts[4] += 1;
-                                        record::persist_error(
-                                            &record::error_path(root, &aoi.key, &item.id, "plumes"),
-                                            &e,
-                                        );
-                                        eprintln!("    {} probability FAIL: {e}", item.id);
-                                        continue;
-                                    }
+                                    ));
+                            let (tif, png) =
+                                (stem.with_extension("tif"), stem.with_extension("png"));
+                            match plume::save_probability(&tif, &plume_chip, &result)
+                                .and_then(|()| plume::save_preview(&png, &plume_chip, &result))
+                            {
+                                Ok(()) => {
+                                    let rel = |p: &PathBuf| {
+                                        p.strip_prefix(root).unwrap().to_string_lossy().into_owned()
+                                    };
+                                    Some(json!({"probability": rel(&tif), "preview": rel(&png)}))
                                 }
-                            } else {
-                                None
-                            };
+                                Err(e) => {
+                                    counts[4] += 1;
+                                    record::persist_error(
+                                        &record::error_path(root, &aoi.key, &item.id, "plumes"),
+                                        &e,
+                                    );
+                                    eprintln!("    {} probability FAIL: {e}", item.id);
+                                    continue;
+                                }
+                            }
+                        } else {
+                            None
+                        };
                         let mut analysis = common_analysis(
                             "plumes",
                             &plume_method,
@@ -465,8 +470,8 @@ pub fn run_targeted(
                         analysis["background_scene"] = json!(result.background);
                         analysis["wind"] = json!(result.wind);
                         analysis["scene_score"] = json!(result.scene_score);
-                        if let Some(asset) = probability {
-                            analysis["assets"] = json!({"probability": asset});
+                        if let Some(assets) = assets {
+                            analysis["assets"] = assets;
                         }
                         let n = result.plumes.len();
                         match commit(

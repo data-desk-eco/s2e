@@ -127,6 +127,60 @@ pub fn save_probability(path: &Path, chip: &Chip, result: &PlumeResult) -> Resul
         .map_err(|e| format!("commit {} → {}: {e}", part.display(), path.display()))
 }
 
+/// viridis via its canonical quarter stops (matplotlib #440154 #3b528b #21918c
+/// #5ec962 #fde725), linearly interpolated — plenty for a browser overlay.
+fn viridis(t: f32) -> [u8; 3] {
+    const S: [[f32; 3]; 5] = [
+        [68., 1., 84.],
+        [59., 82., 139.],
+        [33., 145., 140.],
+        [94., 201., 98.],
+        [253., 231., 37.],
+    ];
+    let x = (t.clamp(0.0, 1.0) * 4.0).min(3.999_999);
+    let (i, f) = (x as usize, x.fract());
+    std::array::from_fn(|k| (S[i][k] + (S[i + 1][k] - S[i][k]) * f).round() as u8)
+}
+
+/// browser-ready RGBA preview of the probability surface: viridis colour with
+/// alpha tracking probability, so the basemap shows through away from the plume.
+pub fn save_preview(path: &Path, chip: &Chip, result: &PlumeResult) -> Result<(), String> {
+    let values = result
+        .probability
+        .as_ref()
+        .ok_or_else(|| "positive has no probability raster".to_string())?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "preview output has no filename".to_string())?
+        .to_string_lossy();
+    let part = path.with_file_name(format!(".{name}.part"));
+    let mem = gdal::DriverManager::get_driver_by_name("MEM").map_err(|e| e.to_string())?;
+    let mut dataset = mem
+        .create_with_band_type::<u8, _>("", chip.width, chip.height, 4)
+        .map_err(|e| e.to_string())?;
+    for band_index in 1..=4 {
+        let data: Vec<u8> = values
+            .iter()
+            .map(|&p| match band_index {
+                4 => (p.clamp(0.0, 1.0) * 255.0) as u8,
+                _ => viridis(p)[band_index - 1],
+            })
+            .collect();
+        let mut buffer = gdal::raster::Buffer::new((chip.width, chip.height), data);
+        dataset
+            .rasterband(band_index)
+            .and_then(|mut band| band.write((0, 0), (chip.width, chip.height), &mut buffer))
+            .map_err(|e| e.to_string())?;
+    }
+    let png = gdal::DriverManager::get_driver_by_name("PNG").map_err(|e| e.to_string())?;
+    dataset
+        .create_copy(&png, &part, &Default::default())
+        .map_err(|e| e.to_string())?;
+    let _ = fs::remove_file(format!("{}.aux.xml", part.display()));
+    fs::rename(&part, path)
+        .map_err(|e| format!("commit {} → {}: {e}", part.display(), path.display()))
+}
+
 fn xml_number_after(xml: &str, marker: &str, tag: &str) -> Option<f64> {
     let section = &xml[xml.find(marker)?..];
     let node = &section[section.find(&format!("<{tag}"))?..];

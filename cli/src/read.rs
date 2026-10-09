@@ -179,8 +179,9 @@ pub fn configure() {
         // retry transient s3 errors instead of returning a NULL dataset on the first
         // hiccup — fleet-wide concurrency on /vsis3 eodata throttles, and an un-retried
         // GDALOpenEx NULL was failing whole scenes. (also covers the aws /vsicurl path.)
-        ("GDAL_HTTP_MAX_RETRY", "5"),
-        ("GDAL_HTTP_RETRY_DELAY", "1"),
+        // cdse sheds load with 503s for longer than five quick retries cover
+        ("GDAL_HTTP_MAX_RETRY", "10"),
+        ("GDAL_HTTP_RETRY_DELAY", "2"),
     ] {
         let _ = gdal::config::set_config_option(k, v);
     }
@@ -255,17 +256,19 @@ pub(crate) fn open(href: &str) -> Result<Raster, String> {
 pub(crate) fn read_window<T: Copy + gdal::raster::GdalType>(
     r: &Raster,
     win: [usize; 4],
-) -> Option<Vec<T>> {
+) -> Result<Vec<T>, String> {
+    // an error, unlike an empty window, must fail the scene: a dropped block
+    // would commit a complete record with its flares missing
     let [x0, y0, x1, y1] = win;
     let (w, h) = (x1 - x0, y1 - y0);
     if w == 0 || h == 0 {
-        return None;
+        return Ok(Vec::new());
     }
-    let band = r.ds.rasterband(1).ok()?;
+    let band = r.ds.rasterband(1).map_err(|e| e.to_string())?;
     let buf = band
         .read_as::<T>((x0 as isize, y0 as isize), (w, h), (w, h), None)
-        .ok()?;
-    Some(buf.data().to_vec())
+        .map_err(|e| format!("read {win:?}: {e}"))?;
+    Ok(buf.into_shape_and_vec().1)
 }
 
 pub(crate) fn read_overview<T: Copy + gdal::raster::GdalType>(
@@ -436,16 +439,16 @@ pub(crate) fn make_candidate(
     item: &Item,
     geom: (f64, f64, f64, f64),
     radiometry: Radiometry,
-) -> Option<Candidate> {
+) -> Result<Candidate, String> {
     let (b11_r, b8a_r, scl_r) = aux;
     let b11 = read_window::<u16>(b11_r, blk.window)?;
     let b8a = b8a_r
         .as_ref()
-        .and_then(|r| read_window::<u16>(r, blk.window));
+        .and_then(|r| read_window::<u16>(r, blk.window).ok());
     let scl = scl_r
         .as_ref()
-        .and_then(|r| read_window::<u8>(r, blk.window));
-    Some(Candidate {
+        .and_then(|r| read_window::<u8>(r, blk.window).ok());
+    Ok(Candidate {
         meta: block_meta(blk, item, geom, radiometry),
         br: blk.br,
         bc: blk.bc,
@@ -471,7 +474,7 @@ fn slice<T: Copy>(full: &[T], tile_w: usize, win: [usize; 4]) -> Vec<T> {
 /// one gdal whole-band RasterIO (the bulk reader's cpu decode: replaces hundreds of
 /// windowed decodes with a single full-tile read).
 fn whole<T: Copy + gdal::raster::GdalType>(r: &Raster) -> Option<Vec<T>> {
-    read_window::<T>(r, [0, 0, r.width, r.height])
+    read_window::<T>(r, [0, 0, r.width, r.height]).ok()
 }
 
 /// the gdal windowed reader — today's logic, now a `SceneReader` over the shared
@@ -526,21 +529,21 @@ impl SceneReader for GdalReader {
         let floor = b12_dn_min(t, calibration);
 
         for blk in &blocks {
-            let b12_raw = match read_window::<u16>(&b12, blk.window) {
-                Some(v) => v,
-                None => continue,
-            };
+            let b12_raw = read_window::<u16>(&b12, blk.window)?;
             if !any_hot(&b12_raw, floor) {
                 continue;
             }
             if aux.is_none() {
                 aux = Some(aux_open(b, b11_url)?);
             }
-            if let Some(c) =
-                make_candidate(blk, b12_raw, aux.as_ref().unwrap(), item, geom, calibration)
-            {
-                cands.push(c);
-            }
+            cands.push(make_candidate(
+                blk,
+                b12_raw,
+                aux.as_ref().unwrap(),
+                item,
+                geom,
+                calibration,
+            )?);
         }
         Ok((cands, overview_cloud_free))
     }

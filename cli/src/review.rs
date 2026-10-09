@@ -202,7 +202,7 @@ fn collinearity(root: &str, asset: &str, env: [f64; 4], segs: &[[f64; 4]]) -> Op
     let (bx, by) = to_utm(env[2], env[3]);
     let (x0, x1) = (ax.min(bx) - 1.0, ax.max(bx) + 1.0);
     let (y0, y1) = (ay.min(by) - 1.0, ay.max(by) + 1.0);
-    let probability = read::read_window::<f32>(&r, [0, 0, r.width, r.height])?;
+    let probability = read::read_window::<f32>(&r, [0, 0, r.width, r.height]).ok()?;
     let mut pts = Vec::new();
     for (i, &p) in probability.iter().enumerate() {
         if p > s2e_core::plume::DEFAULT_THRESHOLD {

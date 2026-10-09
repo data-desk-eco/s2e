@@ -362,13 +362,6 @@ pub fn run_targeted(
                     continue;
                 }
             };
-            if want_plumes {
-                // targets run oldest first and backgrounds lie within the pad,
-                // so a chip older than that is never read again
-                let cutoff = super::shift_date(&item.date, -PLUME_PAD_DAYS - 1);
-                cache.retain(|id, _| dates.get(id).is_some_and(|d| **d >= cutoff));
-                cache.insert(item.id.clone(), chip.clone());
-            }
             let cloud_cells = plume::cloud_cells(&chip);
             let cloud_path = match write_clouds(
                 root,
@@ -451,15 +444,20 @@ pub fn run_targeted(
             }
 
             if want_plumes && !plumes_done {
+                // targets run oldest first and backgrounds lie within the pad,
+                // so a chip older than that is never read again
+                let cutoff = super::shift_date(&item.date, -PLUME_PAD_DAYS - 1);
+                cache.retain(|id, _| dates.get(id).is_some_and(|d| **d >= cutoff));
                 let result = plume_detector.as_ref().unwrap().detect(
                     item,
+                    &chip,
                     &candidates,
                     lon,
                     lat,
                     &mut cache,
                 );
                 match result {
-                    Ok((plume_chip, result)) => {
+                    Ok(result) => {
                         // both pixel assets commit before the referencing record
                         let assets = if result.is_plume() {
                             let stem =
@@ -472,8 +470,8 @@ pub fn run_targeted(
                                     ));
                             let (tif, png) =
                                 (stem.with_extension("tif"), stem.with_extension("png"));
-                            match plume::save_probability(&tif, &plume_chip, &result)
-                                .and_then(|()| plume::save_preview(&png, &plume_chip, &result))
+                            match plume::save_probability(&tif, &chip, &result)
+                                .and_then(|()| plume::save_preview(&png, &chip, &result))
                             {
                                 Ok(()) => {
                                     let rel = |p: &PathBuf| {
@@ -500,7 +498,7 @@ pub fn run_targeted(
                             aoi,
                             item,
                             &c.source,
-                            plume_chip.footprint(),
+                            chip.footprint(),
                             &result.status,
                         );
                         analysis["cloud_analysis"] = cloud_ref.clone().into();
@@ -518,7 +516,7 @@ pub fn run_targeted(
                             item,
                             "plumes",
                             &plume_method,
-                            record::collection(analysis, plume_features(&plume_chip, &result)),
+                            record::collection(analysis, plume_features(&chip, &result)),
                         ) {
                             Ok(()) => counts[3] += n,
                             Err(e) => {
@@ -536,6 +534,7 @@ pub fn run_targeted(
                         eprintln!("    {} plume FAIL: {e}", item.id);
                     }
                 }
+                cache.insert(item.id.clone(), chip);
             }
             eprintln!("    {}: committed detector records", item.id);
         }

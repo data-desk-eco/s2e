@@ -320,14 +320,13 @@ pub fn read_chip(item: &Item, lon: f64, lat: f64, clouds: &CloudModel) -> Result
     let band_urls = urls(item)?;
     let bounds = site_bounds(lon, lat, item.epsg);
     let calibration = radiometry(item)?;
-    let nearest: Vec<Vec<u16>> = band_urls
-        .par_iter()
-        .enumerate()
-        .map(|(i, url)| {
-            let raster = open(url)?;
-            band_window(&raster, bounds, RESOLUTION[i], calibration.offset)
-        })
-        .collect::<Result<_, String>>()?;
+    let nearest: Vec<Vec<u16>> = crate::read::retry(|| {
+        band_urls
+            .par_iter()
+            .enumerate()
+            .map(|(i, url)| band_window(&open(url)?, bounds, RESOLUTION[i], calibration.offset))
+            .collect()
+    })?;
     let width = ((bounds[2] - bounds[0]) / 10.0).round() as usize;
     let height = ((bounds[3] - bounds[1]) / 10.0).round() as usize;
     let n = width * height;

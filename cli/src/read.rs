@@ -176,6 +176,10 @@ pub fn configure() {
         ("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR"),
         ("GDAL_HTTP_MULTIPLEX", "YES"),
         ("VSI_CACHE", "TRUE"),
+        // gdal's defaults, 5% of ram for blocks and 25 MB per open file, add up
+        // to hundreds of MB across 13 bands per chip times the thread pool
+        ("GDAL_CACHEMAX", "256"),
+        ("VSI_CACHE_SIZE", "8000000"),
         // retry transient s3 errors instead of returning a NULL dataset on the first
         // hiccup — fleet-wide concurrency on /vsis3 eodata throttles, and an un-retried
         // GDALOpenEx NULL was failing whole scenes. (also covers the aws /vsicurl path.)
@@ -744,6 +748,22 @@ pub fn cloud_scene(item: &Item, bbox: [f64; 4], full_tile: bool) -> Vec<(String,
         .collect()
 }
 
+/// a failed scene read (a cdse 503 that outlasts gdal's retries, a truncated
+/// range) gets three more tries, curl's cache cleared first or the bad bytes
+/// come back
+pub(crate) fn retry<T>(f: impl Fn() -> Result<T, String>) -> Result<T, String> {
+    let mut r = f();
+    for n in 1..=3 {
+        if r.is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(10 * n));
+        unsafe { gdal_sys::VSICurlClearCache() };
+        r = f();
+    }
+    r
+}
+
 /// the reader seam composed: decode + prescreen (reader) → `core::detect_block` (driver).
 pub fn detect_scene(
     r: &dyn SceneReader,
@@ -753,7 +773,7 @@ pub fn detect_scene(
     t: &Thresholds,
     screen_overview: bool,
 ) -> Result<(Vec<Detection>, bool), String> {
-    let (cands, ocf) = r.candidates(item, bbox, full_tile, t, screen_overview)?;
+    let (cands, ocf) = retry(|| r.candidates(item, bbox, full_tile, t, screen_overview))?;
     let (mut dets, cf) = detect_candidates(&cands, ocf, t);
     // blocks snap OUT to the 256 px grid, so detections can land up to ~one block beyond
     // the requested AOI. clip to the AOI bbox so nothing outside it is ever emitted —

@@ -307,12 +307,12 @@ impl<'a> PlumeDetector<'a> {
     pub fn detect(
         &self,
         target: &Item,
+        target_chip: &Chip,
         candidates: &[Item],
         lon: f64,
         lat: f64,
         cache: &mut HashMap<String, Chip>,
-    ) -> Result<(Chip, PlumeResult), String> {
-        let target_chip = background::cached(cache, target, lon, lat, self.clouds)?.clone();
+    ) -> Result<PlumeResult, String> {
         let mut result = PlumeResult {
             status: "ok".into(),
             clear_percent: target_chip.clear_percent,
@@ -324,16 +324,16 @@ impl<'a> PlumeDetector<'a> {
         };
         if target_chip.clear_percent < 50.0 {
             result.status = "cloudy".into();
-            return Ok((target_chip, result));
+            return Ok(result);
         }
         let zeros = target_chip.nearest.iter().filter(|&&v| v == 0).count();
         if zeros * 2 > target_chip.nearest.len() {
             result.status = "out_of_swath".into();
-            return Ok((target_chip, result));
+            return Ok(result);
         }
         let background_id = match background::select(
             target,
-            &target_chip,
+            target_chip,
             candidates,
             lon,
             lat,
@@ -343,7 +343,7 @@ impl<'a> PlumeDetector<'a> {
             Some(id) => id,
             None => {
                 result.status = "no_background".into();
-                return Ok((target_chip, result));
+                return Ok(result);
             }
         };
         let background = cache.get(&background_id).unwrap();
@@ -461,7 +461,7 @@ impl<'a> PlumeDetector<'a> {
             }
         }
         result.probability = Some(probability);
-        Ok((target_chip, result))
+        Ok(result)
     }
 }
 

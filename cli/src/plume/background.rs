@@ -91,19 +91,6 @@ pub(super) fn most_similar(
         .map(|(id, _)| id.clone())
 }
 
-fn chip<'a>(
-    cache: &'a mut HashMap<String, Chip>,
-    item: &Item,
-    lon: f64,
-    lat: f64,
-    clouds: &CloudModel,
-) -> Result<&'a Chip, String> {
-    if !cache.contains_key(&item.id) {
-        cache.insert(item.id.clone(), read_chip(item, lon, lat, clouds)?);
-    }
-    Ok(cache.get(&item.id).unwrap())
-}
-
 pub(super) fn select(
     target: &Item,
     target_chip: &Chip,
@@ -187,14 +174,4 @@ pub(super) fn select(
     }
     let usable = if strict.is_empty() { &loose } else { &strict };
     Ok(most_similar(target_chip, usable, cache))
-}
-
-pub(super) fn cached<'a>(
-    cache: &'a mut HashMap<String, Chip>,
-    item: &Item,
-    lon: f64,
-    lat: f64,
-    clouds: &CloudModel,
-) -> Result<&'a Chip, String> {
-    chip(cache, item, lon, lat, clouds)
 }

@@ -330,6 +330,7 @@ pub fn run_targeted(
             .filter(|item| item.cloud_cover.unwrap_or(100.0) <= c.cloud)
             .cloned()
             .collect();
+        let dates: HashMap<_, _> = candidates.iter().map(|i| (&i.id, &i.date)).collect();
         let mut cache = HashMap::new();
         eprintln!("  {} {}: {} acquisitions", aoi.id, aoi.name, targets.len());
         for item in &targets {
@@ -361,7 +362,13 @@ pub fn run_targeted(
                     continue;
                 }
             };
-            cache.insert(item.id.clone(), chip.clone());
+            if want_plumes {
+                // targets run oldest first and backgrounds lie within the pad,
+                // so a chip older than that is never read again
+                let cutoff = super::shift_date(&item.date, -PLUME_PAD_DAYS - 1);
+                cache.retain(|id, _| dates.get(id).is_some_and(|d| **d >= cutoff));
+                cache.insert(item.id.clone(), chip.clone());
+            }
             let cloud_cells = plume::cloud_cells(&chip);
             let cloud_path = match write_clouds(
                 root,

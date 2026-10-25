@@ -1,4 +1,4 @@
-// flare: sentinel-2 l1c swir flare detection, straight off the jp2 archive,
+// burnoff: sentinel-2 l1c swir flare detection, straight off the jp2 archive,
 // as a duckdb extension:
 //   s2_flares(b12 VARCHAR, xmin DOUBLE, ymin DOUBLE, xmax DOUBLE, ymax DOUBLE
 //             [, thresholds VARCHAR])
@@ -31,7 +31,7 @@
 // a background median per 320 px cell, the spectral mask, its 4-connected
 // components, the morphological gates and the hot core grown from each peak.
 #define _GNU_SOURCE
-#define DUCKDB_EXTENSION_NAME flare
+#define DUCKDB_EXTENSION_NAME burnoff
 #define DUCKDB_EXTENSION_API_VERSION_MAJOR 1
 #define DUCKDB_EXTENSION_API_VERSION_MINOR 2
 #define DUCKDB_EXTENSION_API_VERSION_PATCH 0
@@ -84,7 +84,14 @@ static const char *params(const char *s, double *t) {
 // QUANTIFICATION_VALUE of 10000. older baselines have no raster cloud mask.
 static double cal(int dn) { return dn ? (dn - 1000) / 10000. : 0; }
 
-typedef struct { unsigned char *p; size_t n, cap; long long off, size; } buf;
+// bytes read: where they start in the file, the file's size when known, and
+// the seconds a 429 asked us to wait
+typedef struct {
+  unsigned char *p;
+  size_t n, cap;
+  long long off, size;
+  int wait;
+} buf;
 
 static size_t wr(char *d, size_t s, size_t n, void *u) {
   buf *b = u;
@@ -101,11 +108,18 @@ static size_t hd(char *d, size_t s, size_t n, void *u) {
   char *slash = memchr(d, '/', s * n);
   if (!strncasecmp(d, "content-range:", 14) && slash)
     b->size = atoll(slash + 1);
+  if (!strncasecmp(d, "x-ratelimit-reset:", 18)) b->wait = atoi(d + 18);
+  if (!strncasecmp(d, "retry-after:", 12)) b->wait = atoi(d + 12);
   return s * n;
 }
 
-// one range [lo, hi) or, with hi < 0, the whole object; transient failures
-// (network errors, 429, 5xx) back off and retry, as cdse sheds load with 503s
+// bytes [lo, hi) or, with hi < 0, from lo to the end. a range past the end
+// is PAST, which eodata answers with a 404 rather than a 416. transient
+// failures (network errors, 429, 5xx) retry: a 429 after the wait it names,
+// as eodata allows 5000 requests a minute for each key, and the rest with a
+// backoff, as cdse sheds load with 503s
+static const char PAST[] = "range past the end of the file";
+
 static const char *get(CURL *c, const char *url, long long lo, long long hi,
                        buf *b) {
   char range[48], u[4096];
@@ -115,26 +129,29 @@ static const char *get(CURL *c, const char *url, long long lo, long long hi,
              s3 ? s3 : "eodata.dataspace.copernicus.eu", url + 5);
   else
     snprintf(u, sizeof u, "%s", url);
-  snprintf(range, sizeof range, "%lld-%lld", lo, hi - 1);
+  if (hi < 0) snprintf(range, sizeof range, "%lld-", lo);
+  else snprintf(range, sizeof range, "%lld-%lld", lo, hi - 1);
   curl_easy_setopt(c, CURLOPT_URL, u);
-  curl_easy_setopt(c, CURLOPT_RANGE, hi < 0 ? NULL : range);
+  curl_easy_setopt(c, CURLOPT_RANGE, lo || hi >= 0 ? range : NULL);
   curl_easy_setopt(c, CURLOPT_WRITEDATA, b);
   curl_easy_setopt(c, CURLOPT_HEADERDATA, b);
   for (int i = 0; i < 8; i++) {
     long code = 0;
-    b->n = 0, b->size = -1;
+    b->n = 0, b->size = -1, b->wait = 0;
     CURLcode e = curl_easy_perform(c);
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+    if (!e && (code == 416 || (code == 404 && lo))) return PAST;
     if (!e && code < 400) {
       b->off = code == 200 ? 0 : lo;   // a server that ignored the range
-      if (b->size < 0 && (hi < 0 || code == 200)) b->size = b->n;
+      if (b->size < 0 && (hi < 0 || code == 200)) b->size = b->off + b->n;
       return NULL;
     }
     if (!e && code != 429 && code < 500) return "http error";
     if (e == CURLE_FILE_COULDNT_READ_FILE || e == CURLE_URL_MALFORMAT ||
         e == CURLE_UNSUPPORTED_PROTOCOL || e == CURLE_LOGIN_DENIED)
       return curl_easy_strerror(e);
-    sleep(1u << (i < 5 ? i : 5));
+    sleep(code == 429 && b->wait > 0 ? MIN(b->wait, 60)
+                                     : 1 << (i < 5 ? i : 5));
   }
   return "fetch failed after retries";
 }
@@ -190,11 +207,16 @@ typedef struct {
 
 typedef struct { CURL *c; buf b, s; band bd[3]; unsigned short *px; } ctx;
 
+// a band's header. it is the same on every date of one MGRS tile, band and
+// processing baseline (only kakadu's comments differ), so one read serves
+// them all, and the file's size, until a read gives it, is that file's
 static const char *header(ctx *x, const char *url, band *f) {
-  char key[4200];
+  char key[64];
+  const char *fn = strrchr(url, '/') ? strrchr(url, '/') + 1 : url;
+  const char *bd = strrchr(fn, '_'), *nb = strstr(url, "_N");
   buf *b = &x->b;
   long long size = -1;
-  snprintf(key, sizeof key, "%s#h", url);
+  snprintf(key, sizeof key, "%.6s%.12s%.6s", fn, bd ? bd : "", nb ? nb : "");
   if (!recall(key, b, &size)) {
     const char *e = get(x->c, url, 0, 16384, b);
     if (e) return e;
@@ -247,37 +269,40 @@ static int sot(const unsigned char *p, int nt, int *k, long long *len) {
 // order, so those found bracket k: the next read starts where k - 1 ends,
 // takes the whole bracket once it is small, and otherwise interpolates
 // within it
-static const char *tile(ctx *x, const char *url, band *f, int k,
-                        long long pred, long long want) {
+static const char *tile(ctx *x, const char *url, band *f, const char *need,
+                        int k, long long pred, long long want) {
   long long M = want ? 64 << 10 : 256 << 10, lo = pred - M, len;
   long long W = 2 * M + (want ? want + want / 8 : 512 << 10);
-  long long B = f->first, A = f->size;   // k lies in [B, A)
+  long long B = f->first, A = 0;   // k lies in [B, A), or [B, size)
   int kb = -1, ka = f->nt, j;
   buf *b = &x->b;
   for (int i = 0; i < 12; i++) {
     lo = MAX(MIN(lo, f->size - W), f->first);
     const char *e = get(x->c, url, lo, lo + W, b);
+    if (e == PAST) e = get(x->c, url, 0, 1, b), b->n = 0;   // learn the size
     if (e) return e;
+    f->size = b->size > 0 ? b->size : f->size;
     for (size_t q = 0; q + 12 <= b->n; q++) {
       if (b->p[q] != 0xff || !sot(b->p + q, f->nt, &j, &len)) continue;
       long long at = b->off + q;
       if (at + len > f->size) continue;
       f->at[j] = at, f->len[j] = len;
-      if (j == k) {
-        f->tp[k] = f->d.n;
-        if (q + len > b->n) {
-          if ((e = get(x->c, url, at, at + len, b))) return e;
-          if (b->n != (size_t)len) return "short tile-part";
-          q = 0;
-        }
-        return wr((char *)b->p + q, 1, len, &f->d), NULL;
+      if (need[j] && !f->have[j] && q + len <= b->n)   // k, or one wanted
+        f->tp[j] = f->d.n, f->have[j] = 1, wr((char *)b->p + q, 1, len, &f->d);
+      else if (j == k) {   // k runs past the read
+        if ((e = get(x->c, url, at, at + len, b))) return e;
+        if (b->n != (size_t)len) return "short tile-part";
+        f->tp[k] = f->d.n, f->have[k] = 1;
+        return wr((char *)b->p, 1, len, &f->d), NULL;
       }
       if (j < k && j > kb) kb = j, B = at + len;
       if (j > k && j < ka) ka = j, A = at;
     }
-    W = kb == k - 1 ? MAX(W, 512 << 10) : MIN(A - B, 4 << 20);
-    lo = kb == k - 1 || A - B <= 4 << 20
-       ? B : B + (A - B) * (k - kb - 1) / (ka - kb - 1) - W / 2;
+    if (f->have[k]) return NULL;
+    long long gap = (ka < f->nt ? A : f->size) - B;
+    W = kb == k - 1 ? MAX(W, 512 << 10) : MIN(gap, 4 << 20);
+    lo = kb == k - 1 || gap <= 4 << 20
+       ? B : B + gap * (k - kb - 1) / (ka - kb - 1) - W / 2;
   }
   return "tile-part not found";
 }
@@ -310,10 +335,11 @@ static const char *parts(ctx *x, const char *url, band *f, const char *need) {
   for (int k = 0; k < f->nt; k++) miss += need[k] && !f->have[k];
   if (!miss) return NULL;
   if (miss > f->nt / 4) {
-    const char *e = get(x->c, url, f->first, f->size, &f->d);
+    const char *e = get(x->c, url, f->first, -1, &f->d);
     long long len;
     int k;
     if (e) return e;
+    f->size = f->d.size;
     for (size_t q = 0; q + 12 <= f->d.n && sot(f->d.p + q, f->nt, &k, &len) &&
                        q + len <= f->d.n; q += len)
       f->tp[k] = q, f->at[k] = f->first + q, f->len[k] = len, f->have[k] = 1;
@@ -326,14 +352,20 @@ static const char *parts(ctx *x, const char *url, band *f, const char *need) {
   for (int k = 0; (g = learned(url, "_B12.jp2")) && k < 256; k++)
     if (!l.at[k]) l.at[k] = g->at[k], l.len[k] = g->len[k];
   pthread_mutex_unlock(&lk);
+  // one read takes k and the wanted tile-parts that the layout puts within
+  // 1 MB after it, as a request costs more than a MB in region
   for (int k = 0; k < f->nt; k++) {
     if (!need[k] || f->have[k]) continue;
     long long p = l.at[k]
       ? (long long)(l.at[k] * f->size)
       : f->first + (long long)((double)k * (f->size - f->first) / f->nt);
-    const char *e = tile(x, url, f, k, p, (long long)(l.len[k] * f->size));
+    long long end = p + (long long)(l.len[k] * f->size);
+    for (int j = k + 1; l.at[k] && j < f->nt; j++)
+      if (need[j] && !f->have[j] && l.at[j] &&
+          (long long)(l.at[j] * f->size) - end < 1 << 20)
+        end = (long long)((l.at[j] + l.len[j]) * f->size);
+    const char *e = tile(x, url, f, need, k, p, l.at[k] ? end - p : 0);
     if (e) return e;
-    f->have[k] = 1;
   }
   pthread_mutex_lock(&lk);
   if ((g = learned(url, NULL)))
@@ -790,10 +822,10 @@ static void *worker(void *_) {
   return NULL;
 }
 
-// FLARE_THREADS workers, by default four per core: decoding is the cost,
+// BURNOFF_THREADS workers, by default four per core: decoding is the cost,
 // and more rows in flight only hold more memory
 static void init(void) {
-  const char *n = getenv("FLARE_THREADS");
+  const char *n = getenv("BURNOFF_THREADS");
   int jobs = n ? atoi(n) : 4 * (ncpu = sysconf(_SC_NPROCESSORS_ONLN));
   pthread_t th;
   curl_global_init(CURL_GLOBAL_ALL);

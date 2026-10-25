@@ -1,17 +1,17 @@
--- flare at query time: search CDSE's catalogue and detect, in one query.
---   duckdb -unsigned -init flare/flare.sql
+-- burnoff at query time: search CDSE's catalogue and detect, in one query.
+--   duckdb -unsigned -init burnoff/burnoff.sql
 --   from s2_flares_in(-104.2, 31.6, -103.2, 32.6, '2025-05-01', '2025-05-31');
 -- eodata hrefs need eodata credentials (AWS_ACCESS_KEY_ID etc.); away from
 -- cloudferro, href := 'gcp' reads google's public mirror of the same files.
 load spatial;
-load flare;
+load burnoff;
 -- the catalogue answers a search with a GET only, no HEAD and no ranges,
 -- and a burst of searches with 429s that say to wait two seconds
 set force_download = true;
 set http_retries = 8;
 set http_retry_wait_ms = 2000;
 set http_retry_backoff = 1.5;
--- s2_flares holds its caller while flare's own workers run the rows. with
+-- s2_flares holds its caller while burnoff's own workers run the rows. with
 -- more duckdb threads, the client thread may poll for the result on a core
 -- of its own, about a fifth of the cpu on four cores
 set threads = 1;

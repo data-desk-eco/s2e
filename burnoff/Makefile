@@ -1,4 +1,4 @@
-# flare.duckdb_extension: one c file over libcurl and libopenjp2 (>= 2.5 for
+# burnoff.duckdb_extension: one c file over libcurl and libopenjp2 (>= 2.5 for
 # windowed decode). include/ holds duckdb v2.0.0's C extension headers; the
 # extension targets the stable C API v1.2.0, so it loads in any duckdb from
 # 1.2 on.
@@ -10,23 +10,23 @@ PLATFORM ?= $(shell uname -sm | awk '{ \
 	os = $$1 == "Darwin" ? "osx" : tolower($$1); \
 	arch = $$2 ~ /^(x86_64|amd64)$$/ ? "amd64" : "arm64"; \
 	print os "_" arch }')
-VERSION = 0.2.0
+VERSION = 0.3.0
 
 # a loadable extension is the shared library plus duckdb's metadata footer:
 # a wasm-style custom section header, eight 32-byte fields (last first) and
 # 256 bytes left for a signature
-flare.duckdb_extension: flare.c
-	$(CC) $(CFLAGS) -Iinclude -shared -fPIC -o flare.so flare.c $(LDLIBS)
-	{ cat flare.so; printf '\000\223\004\020duckdb_signature\200\004'; \
+burnoff.duckdb_extension: burnoff.c
+	$(CC) $(CFLAGS) -Iinclude -shared -fPIC -o burnoff.so burnoff.c $(LDLIBS)
+	{ cat burnoff.so; printf '\000\223\004\020duckdb_signature\200\004'; \
 	  for f in "" "" "" C_STRUCT $(VERSION) v1.2.0 $(PLATFORM) 4; do \
 	    printf '%s' "$$f"; head -c $$((32 - $${#f})) /dev/zero; done; \
 	  head -c 256 /dev/zero; } > $@
-	rm flare.so
+	rm burnoff.so
 
-# into ~/.duckdb/extensions, so `load flare` works from any directory
-install: flare.duckdb_extension
-	duckdb -unsigned -c "force install '$(CURDIR)/flare.duckdb_extension'"
+# into ~/.duckdb/extensions, so `load burnoff` works from any directory
+install: burnoff.duckdb_extension
+	duckdb -unsigned -c "force install '$(CURDIR)/burnoff.duckdb_extension'"
 
 clean:
-	rm -f flare.duckdb_extension
+	rm -f burnoff.duckdb_extension
 .PHONY: install clean

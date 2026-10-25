@@ -32,7 +32,7 @@ cli/                        native application
   verify.rs                   run completeness: every feature scanned, no errors left
 wasm/                       the shared flare core for browser clients
 gpu/                        optional CUDA/nvJPEG2000 reader, off by default
-flare/                      standalone C flare detector: command + duckdb extension
+burnoff/                    standalone C flare detector as a duckdb extension
 ```
 
 The `core/` boundary is typed slices in, results out. GDAL, HTTP, models, files and
@@ -122,20 +122,22 @@ cross-orbit backgrounds, magnitude prior, scene hygiene, optional OSM-line
 collinearity against the probability assets) into a ranked candidate CSV for
 valid-plume curation.
 
-## flare/
+## burnoff/
 
 A separate, speed-first flare detector in C (libcurl + libopenjp2), outside the
 Cargo workspace, built only as a DuckDB extension. It reads JP2 tile-parts
-directly (SOT-marker search with learned per-MGRS layouts, windowed OpenJPEG
-decode), uses the L1C `MSK_CLASSI` cloud mask instead of CloudSEN, and runs the
-compact-source thresholds over a box in one pass with 320 px background cells. It
-is not bound to the Rust records or methodology invariants above. `make -C flare`
-builds `flare.duckdb_extension` (`s2_flares()`); `flare/flare.sql` adds the
-`s2_scenes`/`s2_flares_in` macros that search CDSE's STAC, give each scene its
-MGRS 100 km square and detect at query time. JPEG2000 decoding is nearly all the
-cost, so an optimisation decodes fewer pixels or none twice; check one against a
-baseline's detections, which must match exactly. `flare/README.md` has the
-measurements and the limits.
+directly (SOT-marker search with learned per-MGRS layouts and headers, windowed
+OpenJPEG decode), uses the L1C `MSK_CLASSI` cloud mask instead of CloudSEN, and
+runs the compact-source thresholds over a box in one pass with 320 px
+background cells. It is not bound to the Rust records or methodology invariants
+above. `make -C burnoff` builds `burnoff.duckdb_extension` (`s2_flares()`);
+`burnoff/burnoff.sql` adds the `s2_scenes`/`s2_flares_in` macros that search
+CDSE's STAC, give each scene its MGRS 100 km square and detect at query time.
+Two costs set its speed: JPEG2000 decoding for large boxes, and eodata's 5000
+requests a minute per key for many small ones. An optimisation decodes fewer
+pixels or makes fewer requests; check one against a baseline's detections,
+which must match exactly. `burnoff/README.md` has the measurements and the
+limits.
 
 ## What is not here
 

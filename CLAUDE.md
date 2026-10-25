@@ -125,14 +125,17 @@ valid-plume curation.
 ## flare/
 
 A separate, speed-first flare detector in C (libcurl + libopenjp2), outside the
-Cargo workspace. It reads JP2 tile-parts directly (SOT-marker search with learned
-per-MGRS layouts, windowed OpenJPEG decode), uses the L1C `MSK_CLASSI` cloud mask
-instead of CloudSEN, and runs the compact-source thresholds over a box in one pass
-with 320 px background cells. It is not bound to the Rust records or methodology
-invariants above. `make -C flare` builds the `flare` command (TSV jobs in, TSV out)
-and `flare.duckdb_extension` (`s2_flares()`); `flare/flare.sql` adds the
-`s2_scenes`/`s2_flares_in` macros that search CDSE's STAC and detect at query time.
-`flare/README.md` has the measurements and the limits.
+Cargo workspace, built only as a DuckDB extension. It reads JP2 tile-parts
+directly (SOT-marker search with learned per-MGRS layouts, windowed OpenJPEG
+decode), uses the L1C `MSK_CLASSI` cloud mask instead of CloudSEN, and runs the
+compact-source thresholds over a box in one pass with 320 px background cells. It
+is not bound to the Rust records or methodology invariants above. `make -C flare`
+builds `flare.duckdb_extension` (`s2_flares()`); `flare/flare.sql` adds the
+`s2_scenes`/`s2_flares_in` macros that search CDSE's STAC, give each scene its
+MGRS 100 km square and detect at query time. JPEG2000 decoding is nearly all the
+cost, so an optimisation decodes fewer pixels or none twice; check one against a
+baseline's detections, which must match exactly. `flare/README.md` has the
+measurements and the limits.
 
 ## What is not here
 

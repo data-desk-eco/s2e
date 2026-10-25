@@ -1,9 +1,8 @@
 # flare
 
-A Sentinel-2 L1C flare detector in C. It reads the JPEG2000 archive
-directly and runs as a command or as a DuckDB extension. With the
-extension, one SQL query searches the CDSE catalogue and detects flares
-in a region. No stored detections are necessary.
+A Sentinel-2 L1C flare detector in C, as a DuckDB extension. It reads the
+JPEG2000 archive directly. One SQL query searches the CDSE catalogue and
+detects flares in a region. No stored detections are necessary.
 
 ```sql
 -- duckdb -unsigned -init flare/flare.sql
@@ -13,34 +12,39 @@ from s2_flares_in(-104.2, 31.6, -103.2, 32.6, '2025-05-01', '2025-05-31',
 
 ## Build
 
-You need a C compiler, `pkg-config`, libcurl and OpenJPEG 2.5 or later.
+You need a C compiler, `pkg-config`, libcurl and OpenJPEG 2.5 or later. On
+Ubuntu, these are `libcurl4-openssl-dev` and `libopenjp2-7-dev`.
 
 ```bash
-make -C flare            # flare and flare.duckdb_extension
+make -C flare            # flare.duckdb_extension
 make -C flare install    # so that `load flare` works in any directory
 ```
 
 The extension uses the stable DuckDB C API (v1.2.0). It loads in DuckDB
 1.2 or later. It is not signed, so start DuckDB with `-unsigned`.
 
-## Use from DuckDB
+## Use
 
-`flare.sql` loads the extension and the spatial extension, and defines
-two macros:
+`flare.sql` loads the extension and the spatial extension, sets the
+session for the catalogue, and defines two macros:
 
 - `s2_scenes(w, s, e, n, t0, t1, href := 'eodata')` gives each L1C scene
   that touches a longitude/latitude box between two dates. Each scene has
-  its B12 href, its UTM zone, and the box in the metres of that zone.
+  its B12 href, its UTM zone, the west and north edges of its MGRS 100 km
+  square (`sx`, `sy`), and the box to read, in the metres of that zone.
 - `s2_flares_in(w, s, e, n, t0, t1, max_cloud := 100, href := 'eodata',
   thresholds := '')` gives one row for each flare, with lon, lat and the
   detection values.
 
-The macros ask the CDSE catalogue for one month at a time. One month
-gives a maximum of 1000 scenes, which is approximately 60 MGRS tiles.
+`eodata` hrefs need the eodata credentials in `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and `AWS_S3_ENDPOINT`. CloudFerro machines have
+them in `/etc/profile.d/eodata.sh`. Away from CloudFerro, `href := 'gcp'`
+reads the same files from the public Google Cloud mirror.
 
-`eodata` hrefs need the eodata credentials in `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY`. Away from CloudFerro, `href := 'gcp'` reads the
-same files from the public Google Cloud mirror.
+`flare.sql` sets `threads = 1`. The detection runs on the extension's own
+workers. With more DuckDB threads, the client thread can poll for the
+result on a core of its own, which costs approximately 20% of the CPU on
+four cores.
 
 The function below the macros is:
 
@@ -55,51 +59,67 @@ s2_flares(b12 VARCHAR, xmin DOUBLE, ymin DOUBLE, xmax DOUBLE, ymax DOUBLE
 The box is in metres of the UTM zone of the scene. `clear` is the
 cloud-free fraction of the observed pixels in the box. It is NULL when
 the tile has no data in the box. A failed row has an `error` value, and
-the query continues. `thresholds` is `'name=value,...'`. Run `flare
---help` to see the names and the defaults.
+the query continues. `thresholds` is `'name=value,...'` over the
+defaults in `flare.c`.
 
-## Use from the shell
+`FLARE_THREADS` sets the number of rows in flight (default four per
+core).
 
-```bash
-AOI=aoi.geojson SCENES=scenes.ndjson.gz duckdb -c '.read flare/jobs.sql' |
-  flare/flare > flares.tsv
-```
+## Scenes and squares
 
-The input has one job on each line: `key`, B12 URL, `xmin`, `ymin`,
-`xmax`, `ymax`, separated by tabs. `jobs.sql` makes these lines from an
-s2e AOI and a `s2e discover` manifest. The output is tab-separated with a
-header. Each detection has one row. A job without detections has one row
-with empty detection columns. A failed job has the status `err`, and its
-reason goes to stderr. To run the failed jobs again, select them by
-status.
+The tiles of one UTM zone share a pixel grid and overlap by 9.8 km. Each
+scene keeps only the flares in its MGRS 100 km square, so the squares
+partition a pass and no flare is found twice. The box that a scene reads
+is its square, widened by 2 km and rounded out to the 6.4 km background
+cells of the tile. A flare in the square thus has the same background
+cells and components as in a run over the whole tile. Against the
+earlier full-tile macro, all 473 flares inside their squares in the
+Permian test were identical in every value.
 
-`FLARE_THREADS` sets the number of workers (default 64).
-`FLARE_CACHE` sets the number of cache slots (default 4096).
+Before this partition, a flare in an overlap was kept when either tile
+found it. The tiles have different background cells, so some flares were
+found in one tile only. That test had 22 such flares out of 490.
+
+Across a zone boundary, the two detections stay.
+
+The catalogue gives a maximum of 1000 scenes for each search, and it
+answers a burst of searches with HTTP 429. `s2_scenes` sizes each search
+from the box: approximately 200 days for a point, 90 days for one degree
+square and 50 days for two. A full page stops the query with an error, so
+scenes are never lost without a message.
 
 ## How it reads the archive
 
 Sentinel-2 JP2 files before baseline 05.12 have no tile index. GDAL finds
-tile *k* with *k* + 1 sequential range requests. In a test from a home
-connection, a 100-pixel window took 2, 42 and 82 requests at three
-positions in the file. flare does these steps:
+tile *k* with *k* + 1 sequential range requests. flare does these steps:
 
 1. It reads the 16 KB header, which gives the tiling and the GMLJP2
    georeferencing.
 2. It reads the cloud mask (a few KB). It does not fetch JP2 tiles that
-   are below cloud.
+   are below cloud, and it decodes each tile only over its clear 320 px
+   background cells.
 3. It finds each tile-part from a guessed offset. The byte pair 0xFF90
    cannot occur in the coded data, so a scan for the SOT marker finds
-   the tile-part. The offsets of the tile-parts change little between
-   dates, so flare learns them for each MGRS tile and band. After it
-   learns them, it reads a tile in approximately 1.1 requests. If a box
-   needs more than a quarter of a band, flare reads the full codestream
-   in one request.
+   the tile-part. The tile-parts found bracket the one that is wanted,
+   and the next read interpolates in the bracket. The offsets change
+   little between dates, so flare learns them for each MGRS tile and
+   band. If a box needs more than a quarter of a band, flare reads the
+   full codestream in one request.
 4. The main header and one tile-part make a complete codestream.
-   OpenJPEG decodes only the box from it.
-5. It reads B11 and B8A only around the candidate flares in B12.
-6. It keeps headers, masks and tile-parts in a cache, so other sites on
-   the same scene, and the same query with new thresholds, do not send
-   requests again.
+   OpenJPEG decodes only a window of it.
+5. It reads B11 only around components of candidate pixels that can hold
+   a peak. It reads B8A only for components with a pixel that is both a
+   possible peak and bright in B11, and only where saturation does not
+   decide the pixel. Both are exact: the detections do not change.
+6. The windows of B11 and B8A are merged while the merged window costs
+   less than a second decode. Each decode costs approximately 4 ms
+   however small it is, because these files use 8 by 8 code-blocks and
+   OpenJPEG parses the packet headers of the whole tile.
+7. When fewer rows are in flight than there are cores, a large decode
+   uses the free cores.
+
+Headers and cloud masks are kept between rows. Tile-parts are not kept,
+and a codestream is freed when its band is decoded.
 
 ## Method
 
@@ -121,28 +141,32 @@ These are the differences from the s2e block detector:
   cirrus). CloudSEN is not used.
 
 A numpy and scipy implementation of the same method was run on bands
-that GDAL decoded. On one full tile, it gave the same 87 detections as
-the command and the extension, to ten significant figures.
+that GDAL decoded. On one full tile, it gave the same 87 detections.
 
 ## Measurements
 
-These are from a laptop on a home connection, reading the Google Cloud
-mirror. In-region reads on CloudFerro are not yet measured.
+On CloudFerro, from an eo1.large (4 vCPU, 7.6 GB) in WAW3-2, reading
+eodata over S3:
 
-- One full tile from local files: 5.1 s on one thread. The JPEG2000
-  decode uses most of this time.
-- 30 by 22 km in the Permian, March to June 2025, from the macro: 46
-  scenes, 78 flares, 14 s.
-- 100 by 110 km in the Permian, May 2025: 41 scenes, 521 flares, 66 s.
-  The connection limited this run (61 s of CPU time on approximately one
-  core).
+| Query | Before | Now |
+| --- | --- | --- |
+| 100 by 110 km, May 2025, 56 scenes: wall time | 33 s | 17 s |
+| the same: CPU time | 100 to 116 s | 61 s |
+| the same: peak memory | 3.4 GB | 1.0 GB |
+| 2 km box, all of 2025, 88 scenes | 7 to 10 s | 1.4 to 1.8 s |
+| 190 by 220 km, March to May 2025, 315 scenes | not run | 185 s, 1.8 GB |
+
+The large query used all four cores. JPEG2000 decoding is approximately
+77% of the CPU time, and 68% is OpenJPEG's entropy decoder. A newer
+OpenJPEG (2.5.4), and builds with `-O3 -march=native`, were not faster.
+The decoder thus sets the speed, and more cores give more speed.
+
+From a laptop on a home connection, the Google Cloud mirror limits the
+speed. A 28 by 22 km box over four months took 15 to 20 s.
 
 ## Limits
 
 - flare needs baseline N0400 or later, because older products have no
   raster cloud mask.
-- A flare in the overlap of two MGRS tiles in the same UTM zone is the
-  same pixel in each tile, so the macro removes the duplicate. Across a
-  zone boundary, the two detections stay.
-- Signed `s3://` reads and the Linux build with Ubuntu's OpenJPEG 2.5.0
-  are not yet tested.
+- If `max_pixels` is more than 100, a component that crosses the edge of
+  a square can be cut at the edge of the box.

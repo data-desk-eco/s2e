@@ -20,3 +20,6 @@ license = "MIT"
 [profile.release]
 opt-level = 3
 lto = true
+
+[patch.crates-io]
+gdal = { path = "/private/tmp/claude-501/-Users-louis-data-desk/e5334686-b749-47b6-96c2-a21bf6174fe4/scratchpad/gdal-patched" }

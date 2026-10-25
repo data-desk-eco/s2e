@@ -102,7 +102,7 @@ is disposable and may be rebuilt from the private raw observations.
 - Plume triage (`triage`) is a pure-core precision layer over the published plume
   detections, never the canonical records. Max probability is a floor only, never
   a ranking weight, and curation into
-  `etl/providers/data-desk/s2e/sql/valid-plumes.txt` stays human.
+  `etl/providers/data-desk/burnoff/sql/valid-plumes.txt` stays human.
 
 ## Execution
 
@@ -129,10 +129,9 @@ valid-plume curation.
 
 Fleets and schedules are somebody else's. `data-desk`'s `infra/fleet.sh` boots N
 CloudFerro boxes, pushes a binary and a payload, launches, follows and tears down,
-and knows nothing about this detector. The ETL repository's
-`providers/data-desk/s2e/` owns which AOI runs
-over which window, and the cadence. A run pins a tagged release fetched from the
-archive, not a working tree.
+and knows nothing about this detector. The data-desk ETL no longer runs s2e:
+it reads the plume records s2e wrote, which are fixed. A new run would pin a
+tagged release, not a working tree.
 
 The seam is `--shard I/N`, `verify` and `coverage`: enough for a generic
 orchestrator to split, check and publish a run without ever parsing a record. Do

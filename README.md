@@ -57,7 +57,7 @@ target/release/s2e detect --aoi aoi/uk-gas-import-terminals.geojson \
   --scenes scenes.ndjson.gz --start 2026-01-01 --end 2026-07-17 --out out/uk
 
 # Publish the canonical records unchanged. Turning them into Parquet is etl's
-# job (`etl/providers/data-desk/s2e/views`), so there is no `views` subcommand here.
+# job (`etl/providers/data-desk/burnoff/tables`), so there is no `views` subcommand here.
 target/release/s2e archive --input out/uk --destination s3://bucket
 
 # Cluster the parsed detections into persistent flare sites, and say which
@@ -128,7 +128,7 @@ retain this clean persistence boundary.
 
 `archive` copies GeoJSON and raster assets unchanged. The records stop there: the
 DuckDB transforms that parse the plume records into staging Parquet live in the
-ETL repository (`etl/providers/data-desk/s2e/sql`), beside burnoff's flare
+ETL repository (`etl/providers/data-desk/burnoff/sql`), beside burnoff's flare
 staging. The ETL no longer calls `cluster`; its SQL sites reproduce it. None of
 the Parquet products is another authoritative detection format.
 

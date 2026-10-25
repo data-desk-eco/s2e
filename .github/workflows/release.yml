@@ -3,7 +3,7 @@ name: release
 # tag push → linux binary attached to the GitHub release of that tag. this
 # repository is public, so a fleet or worker box fetches the asset over plain
 # HTTPS and needs no credential of any kind. the etl repo pins the tag it wants
-# in providers/data-desk/s2e/runtime, so a run uses a release rather than a
+# in the data-desk ETL, so a run uses a release rather than a
 # working tree.
 on:
   push:

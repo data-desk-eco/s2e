@@ -653,8 +653,6 @@ dependencies = [
 [[package]]
 name = "gdal"
 version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82ab834e8be6b54fee3d0141fce5e776ad405add1f9d0da054281926e0d35a9f"
 dependencies = [
  "bitflags",
  "chrono",

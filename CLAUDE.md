@@ -131,7 +131,7 @@ OpenJPEG decode), uses the L1C `MSK_CLASSI` cloud mask instead of CloudSEN, and
 runs the compact-source thresholds over a box in one pass with 320 px
 background cells. It is not bound to the Rust records or methodology invariants
 above. `make -C burnoff` builds `burnoff.duckdb_extension` (`s2_flares()`);
-`burnoff/burnoff.sql`, built in and run on load, adds the `s2_scenes`/`s2_flares_in` macros that search
+`burnoff/burnoff.sql`, built in and run on load (spatial must be loaded first), adds the `s2_scenes`/`s2_flares_in` macros that search
 CDSE's STAC, give each scene its MGRS 100 km square and detect at query time.
 Two costs set its speed: JPEG2000 decoding for large boxes, and eodata's 5000
 requests a minute per key for many small ones. An optimisation decodes fewer

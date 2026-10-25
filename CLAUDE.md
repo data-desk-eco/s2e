@@ -101,8 +101,8 @@ is disposable and may be rebuilt from the private raw observations.
   window.
 - Plume triage (`triage`) is a pure-core precision layer over the published plume
   detections, never the canonical records. Max probability is a floor only, never
-  a ranking weight, and curation into
-  `etl/providers/data-desk/burnoff/sql/valid-plumes.txt` stays human.
+  a ranking weight, and curation stays human. The data-desk ETL now holds
+  only the plumes curation kept, in `etl/providers/data-desk/burnoff/plumes.parquet`.
 
 ## Execution
 

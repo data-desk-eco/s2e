@@ -149,7 +149,7 @@ enum Cmd {
     /// Deterministic plume triage: score the published plume detections (wind
     /// consistency, fixed-offset recurrence, scene-day regimes, magnitude prior,
     /// scene hygiene, optional OSM collinearity) into a ranked candidate list for
-    /// valid-plume curation (etl/providers/data-desk/burnoff/sql/valid-plumes.txt).
+    /// valid-plume curation.
     /// Never mutates canonical records; rebuild the tables first.
     Review {
         /// Store ROOT containing data-desk/detections (local dir or s3:// prefix).

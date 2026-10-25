@@ -136,8 +136,8 @@ CDSE's STAC, give each scene its MGRS 100 km square and detect at query time.
 Two costs set its speed: JPEG2000 decoding for large boxes, and eodata's 5000
 requests a minute per key for many small ones. An optimisation decodes fewer
 pixels or makes fewer requests; check one against a baseline's detections,
-which must match exactly. `burnoff/README.md` has the measurements and the
-limits.
+which must match exactly. The measurements are in the
+history of `burnoff/README.md`.
 
 ## What is not here
 

@@ -9,3 +9,4 @@ cloud/.box-ip.cpu-backup
 .DS_Store
 burnoff/*.duckdb_extension
 burnoff/*.so
+burnoff/*.sql.h

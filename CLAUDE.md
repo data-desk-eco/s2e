@@ -1,9 +1,12 @@
 # s2e
 
-The canonical Rust reference implementation for Sentinel-2 flare and methane-
-plume detection. Shared L1C ingestion, native CloudSEN/MARS-S2L inference, flare
-detection, methane retrieval and clustering live here once. The detector only —
-the machines belong to `data-desk`, the schedules to `etl`.
+An experimental Rust implementation of Sentinel-2 methane-plume detection,
+with the flare detection it grew from. Data Desk's flares are burnoff's
+(github.com/data-desk-eco/burnoff), clustered in the ETL's SQL; the flare
+path here is kept for comparison and for `wasm/`. Shared L1C ingestion,
+native CloudSEN/MARS-S2L inference, flare detection, methane retrieval and
+clustering live here once. The detector only — the machines belong to
+`data-desk`, the schedules to `etl`.
 
 ## Architecture
 
@@ -32,7 +35,6 @@ cli/                        native application
   verify.rs                   run completeness: every feature scanned, no errors left
 wasm/                       the shared flare core for browser clients
 gpu/                        optional CUDA/nvJPEG2000 reader, off by default
-burnoff/                    standalone C flare detector as a duckdb extension
 ```
 
 The `core/` boundary is typed slices in, results out. GDAL, HTTP, models, files and
@@ -68,9 +70,10 @@ when computed together, so partial runs never mutate another detector's result.
 Retrying the same method replaces the same deterministic path; a method change
 creates a new record.
 
-GeoJSON records and assets are authoritative. The ETL job parses them into
-staging Parquet, calls `cluster`, and publishes `data-desk/detections/`,
-`data-desk/observations/` and `data-desk/flares/` from both. Every one of those
+GeoJSON records and assets are authoritative. The ETL job parses the plume
+records into staging Parquet beside burnoff's flares, and publishes
+`data-desk/detections/`, `data-desk/observations/` and `data-desk/flares/`
+from both. Every one of those
 is disposable and may be rebuilt from the private raw observations.
 
 ## Methodology invariants
@@ -121,25 +124,6 @@ detections (wind consistency, fixed-offset recurrence, scene-day regimes,
 cross-orbit backgrounds, magnitude prior, scene hygiene, optional OSM-line
 collinearity against the probability assets) into a ranked candidate CSV for
 valid-plume curation.
-
-## burnoff/
-
-A separate, speed-first flare detector in C (libcurl + libopenjp2), outside the
-Cargo workspace, built only as a DuckDB extension. It reads JP2 tile-parts
-directly (SOT-marker search with learned per-MGRS layouts and headers, windowed
-OpenJPEG decode), uses the L1C `MSK_CLASSI` cloud mask instead of CloudSEN, and
-runs the compact-source thresholds over a box in one pass with 320 px
-background cells. It is not bound to the Rust records or methodology invariants
-above. `make -C burnoff` builds `burnoff.duckdb_extension`: `s2_detect()`
-for one scene and `s2_get()`, a GET for the catalogue that lateral joins
-can call. `burnoff/burnoff.sql` is built in and run on load (spatial must be
-loaded first). Its `s2_scenes`/`s2_flares` macros take a geometry, search
-CDSE's STAC, give each scene its MGRS 100 km square and detect at query time.
-Two costs set its speed: JPEG2000 decoding for large boxes, and eodata's 5000
-requests a minute per key for many small ones. An optimisation decodes fewer
-pixels or makes fewer requests; check one against a baseline's detections,
-which must match exactly. The measurements are in the
-history of `burnoff/README.md`.
 
 ## What is not here
 

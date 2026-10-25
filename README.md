@@ -5,6 +5,11 @@ plumes in Sentinel-2 imagery. Both modes share L1C scene search, CloudSEN maskin
 and georeferencing. Point and AOI runs default to both: a lit flare and an unlit
 methane source are two states of the same facility.
 
+s2e is experimental, and its focus is methane plumes. Data Desk's flare
+detections come from [burnoff](https://github.com/data-desk-eco/burnoff), a
+DuckDB extension, and the ETL clusters them into sites in SQL. The flare path
+here remains for comparison and for `wasm/`.
+
 There is no Python detector runtime. Candle loads the published MARS-S2L and
 CloudSEN PyTorch checkpoints directly and verifies their pinned SHA-256 hashes.
 
@@ -122,12 +127,10 @@ idempotently commits the same path. Combined runs share computation in memory bu
 retain this clean persistence boundary.
 
 `archive` copies GeoJSON and raster assets unchanged. The records stop there: the
-DuckDB transforms that parse them into staging Parquet and publish
-`data-desk/detections/`, `data-desk/observations/` and `data-desk/flares/` live
-in the ETL repository (`etl/providers/data-desk/s2e/sql`), because they are a
-property of how the archive is published rather than of how detection works.
-`cluster` runs between the two stages and publishes nothing itself. None of the
-Parquet products is another authoritative detection format.
+DuckDB transforms that parse the plume records into staging Parquet live in the
+ETL repository (`etl/providers/data-desk/s2e/sql`), beside burnoff's flare
+staging. The ETL no longer calls `cluster`; its SQL sites reproduce it. None of
+the Parquet products is another authoritative detection format.
 
 ## Validation
 
